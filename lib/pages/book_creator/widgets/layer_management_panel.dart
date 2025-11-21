@@ -32,7 +32,7 @@ class _LayerManagementPanelState extends ConsumerState<LayerManagementPanel> {
     final bookId = ref.watch(currentBookIdProvider);
     if (bookId == null) return const SizedBox.shrink();
 
-    final pagesAsync = ref.watch(bookPagesProvider);
+    final pagesAsync = ref.watch(bookPagesProvider(bookId));
     final pageIndex = ref.watch(currentPageIndexProvider);
 
     return AnimatedContainer(

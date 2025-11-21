@@ -1,6 +1,8 @@
 // lib/pages/book_creator/book_creator_page.dart
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';  
+import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';  
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -17,10 +19,11 @@ import '../book_creator/widgets/pages_panel.dart';
 import '../book_creator/widgets/advanced_text_editor.dart';
 import '../book_creator/widgets/background_settings_dialog.dart';
 import '../book_creator/widgets/shape_picker_dialog.dart';
-import '../../widgets/search_bar_widget.dart';
 import '../book_creator/widgets/image_search_dialog.dart';
 import 'package:video_player/video_player.dart';
-import 'widgets/audio_player_widget.dart'; 
+import 'widgets/audio_player_widget.dart';
+import '../book_view/book_view_page.dart';
+
 
 class BookCreatorPage extends ConsumerStatefulWidget {
   final String? bookId;
@@ -39,11 +42,46 @@ class _BookCreatorPageState extends ConsumerState<BookCreatorPage> {
   String? _errorMessage;
   Timer? _autoSaveTimer;
   Timer? _safetyTimer;
+
+  final Map<String, PageElement> _localElementCache = {};
+  Timer? _propertyUpdateDebouncer;
+
+    // 🚀 NEW: Track which element is actively being edited
+  String? _activelyEditingElementId;
+  Timer? _editingTimeoutTimer;
+
+
   
+// 🚀 DRAG STATE: Single source of truth
+Offset? _dragStartGlobalMousePosition; // Mouse position in global space
+Offset? _dragStartElementPosition;     // Element position when drag started
+Offset? _dragMouseOffset;              // Offset from element top-left to mouse click point  
+  
+  // 🚀 NEW: Track original state for resizing
+  Offset? _resizeStartMousePosition;
+  Size? _resizeStartElementSize;
+  Offset? _resizeStartElementPosition;
+
+// ✅ Helper to check if user is interacting
+bool get isUserInteracting => 
+    _currentlyDraggingId != null || 
+    _currentlyResizingId != null || 
+    _currentlyRotatingId != null; 
+
+
   // Grid settings
   bool _gridEnabled = false;
   double _gridSize = 20.0;
   bool _snapToGrid = true;
+
+  //zoom
+  double _zoomLevel = 0.5; // ✅ 50% zoom by default
+  static const double _minZoom = 0.25; // 25% minimum
+  static const double _maxZoom = 3.0; // 300% maximum
+  static const List<double> _zoomPresets = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0];
+  ScrollController? _horizontalScrollController;
+  ScrollController? _verticalScrollController;
+  bool _hasUserScrolled = false;
   
   // Local state for smooth interactions
   final Map<String, Offset> _elementOffsets = {};
@@ -52,6 +90,16 @@ class _BookCreatorPageState extends ConsumerState<BookCreatorPage> {
   String? _currentlyDraggingId;
   String? _currentlyResizingId;
   String? _currentlyRotatingId;
+
+final Map<String, Offset> _originalPositions = {};
+final Map<String, Size> _originalSizes = {};
+final Map<String, ValueNotifier<Offset>> _dragPositionNotifiers = {};
+
+// Track if we should ignore provider updates during interaction
+
+  // 🚀 PERFORMANCE: Debounce database writes
+Timer? _databaseWriteDebouncer;
+final Map<String, ({Offset? position, Size? size, double? rotation})> _pendingUpdates = {};
 
   // Undo/Redo
   final UndoRedoManager _undoRedoManager = UndoRedoManager();
@@ -62,6 +110,24 @@ class _BookCreatorPageState extends ConsumerState<BookCreatorPage> {
 @override
 void initState() {
   super.initState();
+
+  // ✅ INITIALIZE SCROLL CONTROLLERS
+  _horizontalScrollController = ScrollController();
+  _verticalScrollController = ScrollController();
+  
+  // Track when user manually scrolls
+  _horizontalScrollController!.addListener(() {
+    if ((_horizontalScrollController!.offset - _horizontalScrollController!.initialScrollOffset).abs() > 100) {
+      _hasUserScrolled = true;
+    }
+  });
+  
+  _verticalScrollController!.addListener(() {
+    if ((_verticalScrollController!.offset - _verticalScrollController!.initialScrollOffset).abs() > 100) {
+      _hasUserScrolled = true;
+    }
+  });
+
   // Delay provider modification to after widget tree is built
   WidgetsBinding.instance.addPostFrameCallback((_) {
     _initializeBook();
@@ -70,72 +136,255 @@ void initState() {
   _startSafetyTimer();
 }
 
-  @override
-  void dispose() {
-    _autoSaveTimer?.cancel();
-    _safetyTimer?.cancel();
-    super.dispose();
+@override
+void dispose() {
+  _autoSaveTimer?.cancel();
+  _safetyTimer?.cancel();
+  _databaseWriteDebouncer?.cancel();
+  _propertyUpdateDebouncer?.cancel();
+  _editingTimeoutTimer?.cancel();
+
+
+  _horizontalScrollController?.dispose();
+  _verticalScrollController?.dispose();
+
+  _dragStartGlobalMousePosition = null;
+  _dragStartElementPosition = null;
+  _dragMouseOffset = null;
+
+
+  _elementOffsets.clear();
+  _elementSizes.clear();
+  _elementRotations.clear();
+  _originalPositions.clear();
+  _originalSizes.clear();
+
+  for (var notifier in _dragPositionNotifiers.values) {
+    notifier.dispose();
   }
+  _dragPositionNotifiers.clear();
+
+   _dragStartGlobalMousePosition = null;
+  _dragStartElementPosition = null;
+  _dragMouseOffset = null;
+  _dragStartElementPosition = null;
+
+  _resizeStartMousePosition = null;
+  _resizeStartElementSize = null;
+  _resizeStartElementPosition = null;
+
+
+  super.dispose();
+}
+
+void _centerCanvas(double canvasWidth, double canvasHeight) {
+  // Wait a bit longer for everything to load properly
+  Future.delayed(const Duration(milliseconds: 150), () {
+    if (_horizontalScrollController == null || 
+        _verticalScrollController == null ||
+        !_horizontalScrollController!.hasClients ||
+        !_verticalScrollController!.hasClients ||
+        !mounted) {
+      return;
+    }
+    
+    // Don't re-center if user has manually scrolled
+    if (_hasUserScrolled) {
+      return;
+    }
+    
+    // Get viewport dimensions (visible area)
+    final viewportWidth = _horizontalScrollController!.position.viewportDimension;
+    final viewportHeight = _verticalScrollController!.position.viewportDimension;
+    
+    // Get scaled canvas dimensions
+    final scaledCanvasWidth = canvasWidth * _zoomLevel;
+    final scaledCanvasHeight = canvasHeight * _zoomLevel;
+    
+    // Calculate total content size (canvas + padding)
+    final totalContentWidth = scaledCanvasWidth + 80;
+    final totalContentHeight = scaledCanvasHeight + 80;
+    
+    // Calculate center positions
+    // This formula centers the canvas in the visible viewport
+    final horizontalCenter = (totalContentWidth - viewportWidth) / 2;
+    final verticalCenter = (totalContentHeight - viewportHeight) / 2;
+    
+    // Scroll horizontally to center
+    if (horizontalCenter > 0) {
+      _horizontalScrollController!.jumpTo(
+        horizontalCenter.clamp(0.0, _horizontalScrollController!.position.maxScrollExtent)
+      );
+    }
+    
+    // Scroll vertically to center
+    if (verticalCenter > 0) {
+      _verticalScrollController!.jumpTo(
+        verticalCenter.clamp(0.0, _verticalScrollController!.position.maxScrollExtent)
+      );
+    }
+  });
+}
 
   // Snap to grid helpers
-  Offset _snapToGridIfEnabled(Offset position) {
-    if (!_snapToGrid || !_gridEnabled) return position;
-    
-    return Offset(
-      (position.dx / _gridSize).round() * _gridSize,
-      (position.dy / _gridSize).round() * _gridSize,
-    );
+
+
+void _zoomIn() {
+  setState(() {
+    // Increase by 10% increments for smoother control
+    _zoomLevel = (_zoomLevel + 0.1).clamp(_minZoom, _maxZoom);
+  });
+}
+
+void _zoomOut() {
+  setState(() {
+    // Decrease by 10% increments for smoother control
+    _zoomLevel = (_zoomLevel - 0.1).clamp(_minZoom, _maxZoom);
+  });
+}
+
+void _resetZoom() {
+  setState(() {
+    _zoomLevel = 0.5;
+  });
+}
+void _setZoom(double zoom) {
+  setState(() {
+    _zoomLevel = zoom.clamp(_minZoom, _maxZoom);
+  });
+}
+
+String _getZoomPercentage() {
+  return '${(_zoomLevel * 100).round()}%';
+}
+
+Future<void> _initializeBook() async {
+  debugPrint('🟢 === BookCreatorPage._initializeBook START ===');
+  debugPrint('Widget bookId: ${widget.bookId}');
+  
+  // ✅ ADD SAFETY CHECKS
+  if (widget.bookId == null) {
+    debugPrint('❌ ERROR: Book ID is null!');
+    setState(() {
+      _isLoading = false;
+      _errorMessage = 'No book ID provided';
+    });
+    return;
   }
-
-  Size _snapSizeToGridIfEnabled(Size size) {
-    if (!_snapToGrid || !_gridEnabled) return size;
-    
-    return Size(
-      (size.width / _gridSize).round() * _gridSize,
-      (size.height / _gridSize).round() * _gridSize,
-    );
+  
+  if (widget.bookId!.isEmpty || widget.bookId == '0') {
+    debugPrint('❌ ERROR: Invalid book ID: ${widget.bookId}');
+    setState(() {
+      _isLoading = false;
+      _errorMessage = 'Invalid book ID';
+    });
+    return;
   }
-
-  Future<void> _initializeBook() async {
-    try {
-      if (widget.bookId != null) {
-        ref.read(currentBookIdProvider.notifier).setBookId(widget.bookId);
-        setState(() => _isLoading = false);
-      } else {
-        final bookActions = ref.read(bookActionsProvider);
-        final newBook = await bookActions.createBook(
-          title: 'Untitled Book',
-          description: 'A new book',
-        );
-
-        if (newBook != null) {
-          ref.read(currentBookIdProvider.notifier).setBookId(newBook.id);
-          
-          final pageActions = ref.read(pageActionsProvider);
-          await pageActions.addPage(newBook.id);
-          
-          setState(() => _isLoading = false);
-        } else {
+  
+  debugPrint('Widget bookId length: ${widget.bookId!.length}');
+  
+  try {
+    if (widget.bookId != null) {
+      debugPrint('✅ Existing book - loading bookId: ${widget.bookId}');
+      
+      // Set the current book ID in provider
+      debugPrint('🔧 Setting currentBookId in provider...');
+      ref.read(currentBookIdProvider.notifier).setBookId(widget.bookId);
+      
+      // Wait for provider to load
+      debugPrint('⏳ Waiting for bookProvider to load...');
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      // Check if book exists
+      final bookAsync = ref.read(bookProvider(widget.bookId!));
+      await bookAsync.when(
+        data: (book) async {
+          if (book == null) {
+            debugPrint('❌ Book not found in database!');
+            setState(() {
+              _isLoading = false;
+              _errorMessage = 'Book not found';
+            });
+            return;
+          }
+          debugPrint('✅ Book loaded: ${book.title}');
+          debugPrint('📏 Book page size: ${book.pageSize.width}x${book.pageSize.height}');
+        },
+        loading: () {
+          debugPrint('⏳ Book still loading...');
+        },
+        error: (error, stack) {
+          debugPrint('❌ Error loading book: $error');
           setState(() {
             _isLoading = false;
-            _errorMessage = 'Failed to create book. Please check logs.';
+            _errorMessage = 'Error loading book: $error';
           });
-        }
-      }
-    } catch (e) {
+        },
+      );
+      
+      // Load pages
+      debugPrint('📄 Loading pages...');
+      final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+      await pagesAsync.when(
+        data: (pages) {
+          debugPrint('✅ Loaded ${pages.length} pages');
+          if (pages.isEmpty) {
+            debugPrint('⚠️ WARNING: Book has no pages!');
+          } else {
+            debugPrint('📏 First page size: ${pages[0].pageSize?.width ?? "null"}x${pages[0].pageSize?.height ?? "null"}');
+          }
+        },
+        loading: () {
+          debugPrint('⏳ Pages still loading...');
+        },
+        error: (error, stack) {
+          debugPrint('❌ Error loading pages: $error');
+        },
+      );
+      
+      debugPrint('✅ Initialization complete, setting loading to false');
+      setState(() => _isLoading = false);
+      
+    } else {
+      // New book should be created from dashboard with size already selected
+      debugPrint('❌ No bookId provided!');
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Error: $e';
+        _errorMessage = 'No book ID provided. Please create book from dashboard.';
       });
-      debugPrint('Error initializing book: $e');
+      
+      // Navigate back after a short delay
+      debugPrint('🔙 Navigating back to dashboard...');
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          Navigator.pop(context);
+        }
+      });
     }
-  }
-
-  void _startAutoSave() {
-    _autoSaveTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _saveCurrentPage();
+  } catch (e, stack) {
+    debugPrint('❌ Exception in _initializeBook: $e');
+    debugPrint('Stack trace: $stack');
+    setState(() {
+      _isLoading = false;
+      _errorMessage = 'Error: $e';
     });
   }
+  
+  debugPrint('🟢 === BookCreatorPage._initializeBook END ===');
+}
+void _startAutoSave() {
+  _autoSaveTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+    // ✅ OPTIMIZED: Don't save if currently interacting
+    if (_currentlyDraggingId != null || 
+        _currentlyResizingId != null || 
+        _currentlyRotatingId != null) {
+      debugPrint('⏸️ Auto-save skipped - user is interacting');
+      return;
+    }
+    
+    await _saveCurrentPage();
+  });
+}
 
   void _startSafetyTimer() {
     _safetyTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
@@ -155,7 +404,7 @@ void initState() {
     setState(() => _isSaving = true);
     
     // Save current state to undo manager
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
     
     await pagesAsync.when(
@@ -181,7 +430,7 @@ void initState() {
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
     await pagesAsync.when(
@@ -209,7 +458,7 @@ void initState() {
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
     await pagesAsync.when(
@@ -233,7 +482,7 @@ void initState() {
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
     await pagesAsync.when(
@@ -347,7 +596,7 @@ void initState() {
   final bookId = ref.read(currentBookIdProvider);
   if (bookId == null) return;
 
-  final pagesAsync = ref.read(bookPagesProvider);
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
   final pageIndex = ref.read(currentPageIndexProvider);
 
   await pagesAsync.when(
@@ -384,7 +633,7 @@ void initState() {
           final bookId = ref.read(currentBookIdProvider);
           if (bookId == null) return;
 
-          final pagesAsync = ref.read(bookPagesProvider);
+          final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
           final pageIndex = ref.read(currentPageIndexProvider);
 
           await pagesAsync.when(
@@ -449,7 +698,7 @@ void _addAudioElement() async {
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
     await pagesAsync.when(
@@ -514,11 +763,14 @@ void _addVideoElement() async {
       return;
     }
 
+    // ✅ ADD DEBUG HERE
+    debugPrint('✅ Video uploaded successfully: $videoUrl');
+
     // Add video element to canvas
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
     await pagesAsync.when(
@@ -535,6 +787,9 @@ void _addVideoElement() async {
           size: const Size(400, 300),
         );
 
+        // ✅ ADD DEBUG HERE
+        debugPrint('🎬 Creating video element with properties: ${newElement.properties}');
+
         final pageActions = ref.read(pageActionsProvider);
         await pageActions.addElement(currentPage.id, newElement);
         
@@ -550,37 +805,333 @@ void _addVideoElement() async {
   }
 }
 
-  void _deleteElement(String elementId) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
+void _deleteElement(String elementId) async {
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
-    final pageIndex = ref.read(currentPageIndexProvider);
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+  final pageIndex = ref.read(currentPageIndexProvider);
 
-    await pagesAsync.when(
-      data: (pages) async {
-        if (pages.isEmpty || pageIndex >= pages.length) return;
-        
-        final currentPage = pages[pageIndex];
-        
-        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-        
-        final pageActions = ref.read(pageActionsProvider);
-        await pageActions.removeElement(currentPage.id, elementId);
-        
-        setState(() {
-          _selectedElementId = null;
-          _elementOffsets.remove(elementId);
-          _elementSizes.remove(elementId);
-          _elementRotations.remove(elementId);
-        });
-      },
-      loading: () {},
-      error: (_, _) {},
-    );
+  await pagesAsync.when(
+    data: (pages) async {
+      if (pages.isEmpty || pageIndex >= pages.length) return;
+      
+      final currentPage = pages[pageIndex];
+      
+      // Find the element to check if it's locked
+      final element = currentPage.elements.firstWhere(
+        (e) => e.id == elementId,
+        orElse: () => currentPage.elements.first,
+      );
+      
+      if (element.locked) {
+        _showSnackBar('Element is locked. Unlock it to delete.');
+        return;
+      }
+      
+      _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+      
+      final pageActions = ref.read(pageActionsProvider);
+      await pageActions.removeElement(currentPage.id, elementId);
+      
+      setState(() {
+        _selectedElementId = null;
+        _elementOffsets.remove(elementId);
+        _elementSizes.remove(elementId);
+        _elementRotations.remove(elementId);
+      });
+    },
+    loading: () {},
+    error: (_, _) {},
+  );
+}
+
+void _showElementContextMenu(BuildContext context, Offset position, PageElement element, String pageId) async {
+  final RenderBox overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  
+  final result = await showMenu<String>(
+    context: context,
+    position: RelativeRect.fromLTRB(
+      position.dx,
+      position.dy,
+      overlay.size.width - position.dx,
+      overlay.size.height - position.dy,
+    ),
+    constraints: const BoxConstraints(
+      maxHeight: 500, // ← Add this to allow scrolling
+      minWidth: 200,
+    ),
+    items: [
+      // Copy
+      const PopupMenuItem<String>(
+        value: 'copy',
+        child: Row(
+          children: [
+            Icon(Icons.copy, size: 18),
+            SizedBox(width: 12),
+            Text('Copy'),
+            Spacer(),
+            Text('Ctrl+C', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      // Duplicate
+      const PopupMenuItem<String>(
+        value: 'duplicate',
+        child: Row(
+          children: [
+            Icon(Icons.content_copy, size: 18),
+            SizedBox(width: 12),
+            Text('Duplicate'),
+            Spacer(),
+            Text('Ctrl+D', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      const PopupMenuDivider(),
+      
+      // Delete
+      PopupMenuItem<String>(
+        value: 'delete',
+        enabled: !element.locked,
+        child: Row(
+          children: [
+            Icon(Icons.delete, size: 18, color: element.locked ? Colors.grey : Colors.red),
+            const SizedBox(width: 12),
+            Text('Delete', style: TextStyle(color: element.locked ? Colors.grey : Colors.red)),
+            const Spacer(),
+            Text('Delete', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      const PopupMenuDivider(),
+      
+      // Lock/Unlock
+      PopupMenuItem<String>(
+        value: 'toggle_lock',
+        child: Row(
+          children: [
+            Icon(element.locked ? Icons.lock_open : Icons.lock, size: 18),
+            const SizedBox(width: 12),
+            Text(element.locked ? 'Unlock' : 'Lock'),
+            const Spacer(),
+            Text('Ctrl+L', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      const PopupMenuDivider(),
+      
+      // Bring to Front
+      const PopupMenuItem<String>(
+        value: 'bring_to_front',
+        child: Row(
+          children: [
+            Icon(Icons.vertical_align_top, size: 18),
+            SizedBox(width: 12),
+            Text('Bring to Front'),
+            Spacer(),
+            Text('Ctrl+]', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      // Bring Forward
+      const PopupMenuItem<String>(
+        value: 'bring_forward',
+        child: Row(
+          children: [
+            Icon(Icons.arrow_upward, size: 18),
+            SizedBox(width: 12),
+            Text('Bring Forward'),
+            Spacer(),
+            Text(']', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      // Send Backward
+      const PopupMenuItem<String>(
+        value: 'send_backward',
+        child: Row(
+          children: [
+            Icon(Icons.arrow_downward, size: 18),
+            SizedBox(width: 12),
+            Text('Send Backward'),
+            Spacer(),
+            Text('[', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      // Send to Back
+      const PopupMenuItem<String>(
+        value: 'send_to_back',
+        child: Row(
+          children: [
+            Icon(Icons.vertical_align_bottom, size: 18),
+            SizedBox(width: 12),
+            Text('Send to Back'),
+            Spacer(),
+            Text('Ctrl+[', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+      ),
+      
+      const PopupMenuDivider(),
+      
+      // Edit (for text elements)
+      if (element.type == ElementType.text)
+        PopupMenuItem<String>(
+          value: 'edit',
+          enabled: !element.locked,
+          child: Row(
+            children: [
+              Icon(Icons.edit, size: 18, color: element.locked ? Colors.grey : null),
+              const SizedBox(width: 12),
+              Text('Edit Text', style: TextStyle(color: element.locked ? Colors.grey : null)),
+              const Spacer(),
+              Text('Enter', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+          ),
+        ),
+    ],
+  );
+
+  // Handle menu actions
+  if (result != null) {
+    await _handleContextMenuAction(result, element, pageId);
   }
+}
 
- void _showBackgroundSettings() async {
+Future<void> _handleContextMenuAction(String action, PageElement element, String pageId) async {
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) return;
+
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+  final pageIndex = ref.read(currentPageIndexProvider);
+
+  switch (action) {
+    case 'copy':
+
+      _showSnackBar('Copy - Coming Soon');
+      break;
+
+    case 'duplicate':
+      await pagesAsync.when(
+        data: (pages) async {
+          if (pages.isEmpty || pageIndex >= pages.length) return;
+          final currentPage = pages[pageIndex];
+          
+          final newElement = PageElement(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            type: element.type,
+            position: Offset(element.position.dx + 20, element.position.dy + 20),
+            size: element.size,
+            rotation: element.rotation,
+            properties: Map.from(element.properties),
+            textStyle: element.textStyle,
+            textAlign: element.textAlign,
+            lineHeight: element.lineHeight,
+            shadows: element.shadows,
+            locked: false,
+          );
+
+          final pageActions = ref.read(pageActionsProvider);
+          await pageActions.addElement(currentPage.id, newElement);
+          setState(() => _selectedElementId = newElement.id);
+          _showSnackBar('Element duplicated');
+        },
+        loading: () {},
+        error: (_, _) {},
+      );
+      break;
+
+    case 'delete':
+      if (!element.locked) {
+        _deleteElement(element.id);
+      }
+      break;
+
+    case 'toggle_lock':
+      await pagesAsync.when(
+        data: (pages) async {
+          if (pages.isEmpty || pageIndex >= pages.length) return;
+          final currentPage = pages[pageIndex];
+          final pageActions = ref.read(pageActionsProvider);
+          await pageActions.toggleElementLock(currentPage.id, element.id);
+          _showSnackBar(element.locked ? 'Element unlocked' : 'Element locked');
+        },
+        loading: () {},
+        error: (_, _) {},
+      );
+      break;
+
+    case 'bring_to_front':
+    case 'bring_forward':
+    case 'send_backward':
+    case 'send_to_back':
+      await pagesAsync.when(
+        data: (pages) async {
+          if (pages.isEmpty || pageIndex >= pages.length) return;
+          final currentPage = pages[pageIndex];
+          final elements = currentPage.elements;
+          final currentIndex = elements.indexWhere((e) => e.id == element.id);
+
+          if (currentIndex == -1) return;
+
+          List<PageElement>? newOrder;
+
+          switch (action) {
+            case 'bring_to_front':
+              newOrder = List.from(elements);
+              newOrder.removeAt(currentIndex);
+              newOrder.add(element);
+              break;
+            case 'bring_forward':
+              if (currentIndex < elements.length - 1) {
+                newOrder = List.from(elements);
+                newOrder.removeAt(currentIndex);
+                newOrder.insert(currentIndex + 1, element);
+              }
+              break;
+            case 'send_backward':
+              if (currentIndex > 0) {
+                newOrder = List.from(elements);
+                newOrder.removeAt(currentIndex);
+                newOrder.insert(currentIndex - 1, element);
+              }
+              break;
+            case 'send_to_back':
+              newOrder = List.from(elements);
+              newOrder.removeAt(currentIndex);
+              newOrder.insert(0, element);
+              break;
+          }
+
+          if (newOrder != null) {
+            final pageActions = ref.read(pageActionsProvider);
+            await pageActions.reorderElements(currentPage.id, newOrder);
+            _showSnackBar('Layer order updated');
+          }
+        },
+        loading: () {},
+        error: (_, _) {},
+      );
+      break;
+
+    case 'edit':
+      if (element.type == ElementType.text && !element.locked) {
+        _editTextElement(element);
+      }
+      break;
+  }
+}
+
+void _showBackgroundSettings() async {
   debugPrint('🎨 === BACKGROUND SETTINGS CLICKED ===');
   
   final bookId = ref.read(currentBookIdProvider);
@@ -591,7 +1142,7 @@ void _addVideoElement() async {
     return;
   }
 
-  final pagesAsync = ref.read(bookPagesProvider);
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
   final pageIndex = ref.read(currentPageIndexProvider);
   debugPrint('📄 Current Page Index: $pageIndex');
 
@@ -610,26 +1161,37 @@ void _addVideoElement() async {
       debugPrint('🖼️ Current Background Image: ${currentPage.background.imageUrl}');
       
       showDialog(
-    context: context,
-    builder: (context) => BackgroundSettingsDialog(
-    currentBackground: currentPage.background,
-    onBackgroundChange: (updatedBackground) async {
-      debugPrint('🎨 === BACKGROUND CHANGE CALLBACK ===');
-      debugPrint('New Color: ${updatedBackground.color}');
-      debugPrint('New Image: ${updatedBackground.imageUrl}');
-      
-      _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-      
-      final pageActions = ref.read(pageActionsProvider);
-      debugPrint('🔧 Calling pageActions.updatePageBackground...');
-      
-      final success = await pageActions.updatePageBackground(currentPage.id, updatedBackground);
-      debugPrint('✅ Update Result: $success');
-      
-      _showSnackBar('Background updated');
-    },
-  ),
-);
+        context: context,
+        builder: (context) => BackgroundSettingsDialog(
+          currentBackground: currentPage.background,
+          onBackgroundChange: (updatedBackground) async {
+            debugPrint('🎨 === BACKGROUND CHANGE CALLBACK ===');
+            debugPrint('New Color: ${updatedBackground.color}');
+            debugPrint('New Image: ${updatedBackground.imageUrl}');
+            
+            _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+            
+            final pageActions = ref.read(pageActionsProvider);
+            debugPrint('🔧 Calling pageActions.updatePageBackground...');
+            
+            final success = await pageActions.updatePageBackground(currentPage.id, updatedBackground);
+            debugPrint('✅ Update Result: $success');
+            
+            // ✅ CRITICAL FIX: Force refresh the provider
+            if (success) {
+              debugPrint('🔄 Invalidating bookPagesProvider...');
+              ref.invalidate(bookPagesProvider(bookId));
+              
+              // ✅ ALSO REFRESH THE BOOK LIST (for dashboard preview)
+              ref.invalidate(userBooksProvider);
+              
+              debugPrint('✅ Providers invalidated - UI should refresh');
+            }
+            
+            _showSnackBar('Background updated');
+          },
+        ),
+      );
     },
     loading: () {
       debugPrint('⏳ Pages still loading...');
@@ -642,452 +1204,1070 @@ void _addVideoElement() async {
 
  
 
-  Future<void> _updateElementPosition(String elementId, Offset newPosition) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
+Future<void> _updateElementPosition(String elementId, Offset newPosition) async {
+  // 🚀 CRITICAL: Don't write to database during active drag
+  if (_currentlyDraggingId == elementId) {
+    debugPrint('⏸️ Skipping database write - element is being dragged');
+    return;
+  }
+    debugPrint('🎯 Scheduling position update for $elementId');
 
-    final snappedPosition = _snapToGridIfEnabled(newPosition);
+  // Keep debouncing for drag
+  _databaseWriteDebouncer?.cancel();
+  
+  final existing = _pendingUpdates[elementId];
+  _pendingUpdates[elementId] = (
+    position: newPosition,
+    size: existing?.size,
+    rotation: existing?.rotation,
+  );
+  
+  _databaseWriteDebouncer = Timer(const Duration(milliseconds: 800), () {
+    debugPrint('✅ Flushing position update to database');
+    _flushPendingUpdate(elementId);
+  });
+}
 
-    try {
-      final pagesAsync = ref.read(bookPagesProvider);
-      final pageIndex = ref.read(currentPageIndexProvider);
 
-      await pagesAsync.when(
-        data: (pages) async {
-          if (pages.isEmpty || pageIndex >= pages.length) return;
-          
-          final currentPage = pages[pageIndex];
-          final element = currentPage.elements.firstWhere((e) => e.id == elementId);
-          
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: snappedPosition,
-            size: element.size,
-            rotation: element.rotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-          );
+Future<void> _updateElementSize(String elementId, Size newSize) async {
+  debugPrint('🎯 Scheduling size update for $elementId');
+  
+  // Keep debouncing but shorter delay for resize
+  _databaseWriteDebouncer?.cancel();
+  
+  final existing = _pendingUpdates[elementId];
+  _pendingUpdates[elementId] = (
+    position: existing?.position,
+    size: newSize,
+    rotation: existing?.rotation,
+  );
+  
+  _databaseWriteDebouncer = Timer(const Duration(milliseconds: 300), () {
+    debugPrint('✅ Flushing size update to database');
+    _flushPendingUpdate(elementId);
+  });
+}
 
-          final pageActions = ref.read(pageActionsProvider);
-          await pageActions.updateElement(currentPage.id, updatedElement);
-        },
-        loading: () {},
-        error: (_, _) {},
-      );
-    } catch (e) {
-      debugPrint('Error updating element position: $e');
-    }
+Future<void> _flushPendingUpdate(String elementId) async {
+  debugPrint('🚀 === FLUSH PENDING UPDATE START ===');
+  final update = _pendingUpdates[elementId];
+  if (update == null) {
+    debugPrint('⚠️ No pending update for $elementId');
+    return;
+  }
+  
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) {
+    debugPrint('❌ No bookId found');
+    return;
   }
 
-  Future<void> _updateElementSize(String elementId, Size newSize) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
+  debugPrint('💾 Writing to database: position=${update.position}, size=${update.size}, rotation=${update.rotation}');
 
-    final snappedSize = _snapSizeToGridIfEnabled(newSize);
+  try {
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
 
-    try {
-      final pagesAsync = ref.read(bookPagesProvider);
-      final pageIndex = ref.read(currentPageIndexProvider);
+    await pagesAsync.when(
+      data: (pages) async {
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('❌ No valid pages found');
+          return;
+        }
+        
+        final currentPage = pages[pageIndex];
+        final element = currentPage.elements.firstWhere((e) => e.id == elementId);
+        
+        debugPrint('📊 Before Update - DB Element: size=${element.size}, position=${element.position}');
+        
+        final updatedElement = PageElement(
+          id: element.id,
+          type: element.type,
+          position: update.position ?? element.position,
+          size: update.size ?? element.size,
+          rotation: update.rotation ?? element.rotation,
+          properties: element.properties,
+          textStyle: element.textStyle,
+          textAlign: element.textAlign,
+          lineHeight: element.lineHeight,
+          shadows: element.shadows,
+          locked: element.locked,
+        );
 
-      await pagesAsync.when(
-        data: (pages) async {
-          if (pages.isEmpty || pageIndex >= pages.length) return;
-          
-          final currentPage = pages[pageIndex];
-          final element = currentPage.elements.firstWhere((e) => e.id == elementId);
-          
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: element.position,
-            size: snappedSize,
-            rotation: element.rotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-          );
+        debugPrint('📊 After Update - New Element: size=${updatedElement.size}, position=${updatedElement.position}');
 
-          final pageActions = ref.read(pageActionsProvider);
-          await pageActions.updateElement(currentPage.id, updatedElement);
-          
-          if (mounted) {
-            setState(() {
-              _elementSizes.remove(elementId);
-            });
-          }
-        },
-        loading: () {},
-        error: (_, _) {},
-      );
-    } catch (e) {
-      debugPrint('Error updating element size: $e');
-      if (mounted) {
-        setState(() {
-          _elementSizes.remove(elementId);
-        });
-      }
+        final pageActions = ref.read(pageActionsProvider);
+        final success = await pageActions.updateElement(currentPage.id, updatedElement);
+        
+        if (success) {
+          debugPrint('✅ Database write complete for $elementId');
+          // 🚀 Force provider refresh on success
+          ref.invalidate(bookPagesProvider(bookId));
+        } else {
+          debugPrint('❌ Database write failed for $elementId');
+        }
+      },
+      loading: () {
+        debugPrint('⏳ Pages still loading...');
+      },
+      error: (error, stack) {
+        debugPrint('❌ Error in flush: $error');
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Error flushing update: $e');
+  } finally {
+    // Only remove from pending updates if we're not currently interacting
+    if (_currentlyResizingId != elementId && _currentlyDraggingId != elementId) {
+      _pendingUpdates.remove(elementId);
+      debugPrint('🧹 Removed $elementId from pending updates');
     }
   }
+  
+  debugPrint('🚀 === FLUSH PENDING UPDATE END ===');
+}
 
-  Future<void> _updateElementRotation(String elementId, double newRotation) async {
+Future<void> _updateElementRotation(String elementId, double newRotation) async {
+  debugPrint('🎯 Scheduling rotation update for $elementId');
+  
+  _databaseWriteDebouncer?.cancel();
+  
+  final existing = _pendingUpdates[elementId];
+  _pendingUpdates[elementId] = (
+    position: existing?.position,
+    size: existing?.size,
+    rotation: newRotation,
+  );
+  
+  _databaseWriteDebouncer = Timer(const Duration(milliseconds: 500), () {
+    debugPrint('✅ Flushing rotation update to database');
+    _flushPendingUpdate(elementId);
+  });
+}
+
+Future<void> _updateElementPositionAndSize(String elementId, Offset newPosition, Size newSize) async {
+  debugPrint('🎯 Scheduling position+size update for $elementId');
+  
+  _databaseWriteDebouncer?.cancel();
+  
+  // 🚀 CRITICAL: Store the update immediately in pending updates
+  _pendingUpdates[elementId] = (
+    position: newPosition,
+    size: newSize,
+    rotation: _pendingUpdates[elementId]?.rotation,
+  );
+  
+  _databaseWriteDebouncer = Timer(const Duration(milliseconds: 300), () async {
+    debugPrint('✅ Flushing position+size update to database');
+    await _flushPendingUpdate(elementId);
+    
+    // 🚀 Force provider refresh after database write
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId != null) {
+      ref.invalidate(bookPagesProvider(bookId));
+    }
+  });
+}
+
+void _updateTextStyle(PageElement element, TextStyle newStyle) async {
+  debugPrint('🎨 ============================================');
+  debugPrint('🎨 _updateTextStyle CALLED');
+  debugPrint('🎨 Element ID: ${element.id}');
+  debugPrint('🎨 Old fontSize: ${element.textStyle?.fontSize}');
+  debugPrint('🎨 New fontSize: ${newStyle.fontSize}');
+  debugPrint('🎨 ============================================');
+  
+  // ✅ STEP 1: Update local cache IMMEDIATELY for instant UI feedback
+  final updatedElement = PageElement(
+    id: element.id,
+    type: element.type,
+    position: element.position,
+    size: element.size,
+    rotation: element.rotation,
+    properties: element.properties,
+    textStyle: newStyle,
+    textAlign: element.textAlign,
+    lineHeight: element.lineHeight,
+    shadows: element.shadows,
+    locked: element.locked,
+  );
+  
+  debugPrint('🎨 ✅ Step 1: Updating local cache...');
+  setState(() {
+    _localElementCache[element.id] = updatedElement;
+    
+    // 🚀 NEW: Mark this element as actively being edited
+    _activelyEditingElementId = element.id;
+  });
+  debugPrint('🎨 ✅ Local cache updated. Cache size: ${_localElementCache.length}');
+  debugPrint('🎨 ✅ Element marked as actively editing');
+  
+  // 🚀 NEW: Reset the "editing timeout" timer (2 seconds of no changes = done editing)
+  _editingTimeoutTimer?.cancel();
+  _editingTimeoutTimer = Timer(const Duration(seconds: 2), () {
+    debugPrint('🎨 ⏰ Editing timeout - user stopped editing');
+    if (mounted) {
+      setState(() {
+        _activelyEditingElementId = null;
+      });
+    }
+  });
+  
+  // ✅ STEP 2: Debounce database write (500ms)
+  _propertyUpdateDebouncer?.cancel();
+  debugPrint('🎨 ⏱️ Starting 500ms debounce timer...');
+  
+  _propertyUpdateDebouncer = Timer(const Duration(milliseconds: 500), () async {
+    debugPrint('🎨 💾 ============================================');
+    debugPrint('🎨 💾 DEBOUNCE TIMER FIRED - Writing to database');
+    debugPrint('🎨 💾 ============================================');
+    
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      debugPrint('🎨 ❌ No bookId found, aborting');
+      return;
+    }
+    debugPrint('🎨 📚 Book ID: $bookId');
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
+    debugPrint('🎨 📄 Page Index: $pageIndex');
+
+    await pagesAsync.when(
+      data: (pages) async {
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('🎨 ❌ Invalid page index');
+          return;
+        }
+        
+        final currentPage = pages[pageIndex];
+        debugPrint('🎨 📄 Current Page ID: ${currentPage.id}');
+        
+        final pageActions = ref.read(pageActionsProvider);
+        final elementToSave = _localElementCache[element.id] ?? updatedElement;
+        
+        debugPrint('🎨 💾 Element to save:');
+        debugPrint('🎨    - ID: ${elementToSave.id}');
+        debugPrint('🎨    - fontSize: ${elementToSave.textStyle?.fontSize}');
+        
+        debugPrint('🎨 💾 Calling pageActions.updateElement...');
+        final success = await pageActions.updateElement(currentPage.id, elementToSave);
+        
+        if (success) {
+          debugPrint('🎨 ✅ Database write successful!');
+          debugPrint('🎨 🔄 Invalidating provider to fetch updated data...');
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          debugPrint('🎨 ⏳ Waiting for provider rebuild...');
+          await Future.delayed(const Duration(milliseconds: 600));
+          
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == element.id,
+            orElse: () => element,
+          );
+
+          debugPrint('🎨 🔍 Verification:');
+          debugPrint('   Provider fontSize: ${freshElement.textStyle?.fontSize}');
+          debugPrint('   Cache fontSize: ${elementToSave.textStyle?.fontSize}');
+
+          // 🚀 CRITICAL FIX: Only clear cache if user is NOT actively editing
+          if (_activelyEditingElementId != element.id) {
+            if (freshElement.textStyle?.fontSize == elementToSave.textStyle?.fontSize) {
+              debugPrint('🎨 ✅ Provider data matches cache - safe to clear');
+              if (mounted) {
+                setState(() {
+                  _localElementCache.remove(element.id);
+                });
+              }
+              debugPrint('🎨 ✅ Cache cleared. Remaining cache size: ${_localElementCache.length}');
+            } else {
+              debugPrint('🎨 ⚠️ Provider data MISMATCH - keeping cache for safety');
+            }
+          } else {
+            debugPrint('🎨 🚫 User still actively editing - KEEPING cache');
+          }
+        } else {
+          debugPrint('🎨 ❌ Database write failed!');
+        }
+        
+        debugPrint('🎨 💾 ============================================');
+        debugPrint('🎨 💾 DATABASE WRITE COMPLETE');
+        debugPrint('🎨 💾 ============================================');
+      },
+      loading: () {
+        debugPrint('🎨 ⏳ Pages still loading...');
+      },
+      error: (error, stack) {
+        debugPrint('🎨 ❌ Error: $error');
+      },
+    );
+  });
+  
+  debugPrint('🎨 ✅ Debounce timer scheduled');
+  debugPrint('🎨 ============================================\n');
+}
+
+void _updateTextAlign(PageElement element, TextAlign newAlign) async {
+  debugPrint('📐 ============================================');
+  debugPrint('📐 _updateTextAlign CALLED');
+  debugPrint('📐 Element ID: ${element.id}');
+  debugPrint('📐 Old align: ${element.textAlign}');
+  debugPrint('📐 New align: $newAlign');
+  debugPrint('📐 ============================================');
+  
+  final updatedElement = PageElement(
+    id: element.id,
+    type: element.type,
+    position: element.position,
+    size: element.size,
+    rotation: element.rotation,
+    properties: element.properties,
+    textStyle: element.textStyle,
+    textAlign: newAlign,
+    lineHeight: element.lineHeight,
+    shadows: element.shadows,
+    locked: element.locked,
+  );
+  
+  debugPrint('📐 ✅ Updating local cache...');
+  setState(() {
+    _localElementCache[element.id] = updatedElement;
+    
+    // 🚀 NEW: Mark this element as actively being edited
+    _activelyEditingElementId = element.id;
+  });
+  debugPrint('📐 ✅ Local cache updated');
+  debugPrint('📐 ✅ Element marked as actively editing');
+  
+  // 🚀 NEW: Reset the "editing timeout" timer
+  _editingTimeoutTimer?.cancel();
+  _editingTimeoutTimer = Timer(const Duration(seconds: 2), () {
+    debugPrint('📐 ⏰ Editing timeout - user stopped editing');
+    if (mounted) {
+      setState(() {
+        _activelyEditingElementId = null;
+      });
+    }
+  });
+  
+  _propertyUpdateDebouncer?.cancel();
+  debugPrint('📐 ⏱️ Starting 500ms debounce timer...');
+  
+  _propertyUpdateDebouncer = Timer(const Duration(milliseconds: 500), () async {
+    debugPrint('📐 💾 Debounce fired - writing to database...');
+    
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    try {
-      final pagesAsync = ref.read(bookPagesProvider);
-      final pageIndex = ref.read(currentPageIndexProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
 
-      await pagesAsync.when(
-        data: (pages) async {
-          if (pages.isEmpty || pageIndex >= pages.length) return;
+    await pagesAsync.when(
+      data: (pages) async {
+        if (pages.isEmpty || pageIndex >= pages.length) return;
+        final currentPage = pages[pageIndex];
+        final pageActions = ref.read(pageActionsProvider);
+        
+        debugPrint('📐 💾 Writing alignment to database...');
+        final elementToSave = _localElementCache[element.id] ?? updatedElement;
+        final success = await pageActions.updateElement(currentPage.id, elementToSave);
+        
+        if (success) {
+          debugPrint('📐 ✅ Database write successful!');
+          debugPrint('📐 🔄 Invalidating provider...');
+          ref.invalidate(bookPagesProvider(bookId));
           
-          final currentPage = pages[pageIndex];
-          final element = currentPage.elements.firstWhere((e) => e.id == elementId);
+          debugPrint('📐 ⏳ Waiting for provider rebuild...');
+          await Future.delayed(const Duration(milliseconds: 600));
           
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: element.position,
-            size: element.size,
-            rotation: newRotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == element.id,
+            orElse: () => element,
           );
-
-          final pageActions = ref.read(pageActionsProvider);
-          await pageActions.updateElement(currentPage.id, updatedElement);
           
-          if (mounted) {
-            setState(() {
-              _elementRotations.remove(elementId);
-            });
+          debugPrint('📐 🔍 Verification:');
+          debugPrint('   Provider textAlign: ${freshElement.textAlign}');
+          debugPrint('   Cache textAlign: ${elementToSave.textAlign}');
+          
+          // 🚀 CRITICAL FIX: Only clear cache if user is NOT actively editing
+          if (_activelyEditingElementId != element.id) {
+            if (freshElement.textAlign == elementToSave.textAlign) {
+              debugPrint('📐 ✅ Provider data matches cache - safe to clear');
+              if (mounted) {
+                setState(() {
+                  _localElementCache.remove(element.id);
+                });
+              }
+              debugPrint('📐 ✅ Cache cleared');
+            } else {
+              debugPrint('📐 ⚠️ Provider data MISMATCH - keeping cache');
+            }
+          } else {
+            debugPrint('📐 🚫 User still actively editing - KEEPING cache');
           }
-        },
-        loading: () {},
-        error: (_, _) {},
-      );
-    } catch (e) {
-      debugPrint('Error updating element rotation: $e');
-      if (mounted) {
-        setState(() {
-          _elementRotations.remove(elementId);
-        });
-      }
+        } else {
+          debugPrint('📐 ❌ Database write failed');
+        }
+        
+        debugPrint('📐 ✅ Alignment update complete');
+      },
+      loading: () {},
+      error: (_, _) {},
+    );
+  });
+  
+  debugPrint('📐 ============================================\n');
+}
+
+
+void _updateLineHeight(PageElement element, double newLineHeight) async {
+  debugPrint('📏 ============================================');
+  debugPrint('📏 _updateLineHeight CALLED');
+  debugPrint('📏 Element ID: ${element.id}');
+  debugPrint('📏 Old lineHeight: ${element.lineHeight}');
+  debugPrint('📏 New lineHeight: $newLineHeight');
+  debugPrint('📏 ============================================');
+  
+  final updatedElement = PageElement(
+    id: element.id,
+    type: element.type,
+    position: element.position,
+    size: element.size,
+    rotation: element.rotation,
+    properties: element.properties,
+    textStyle: element.textStyle,
+    textAlign: element.textAlign,
+    lineHeight: newLineHeight,
+    shadows: element.shadows,
+    locked: element.locked,
+  );
+  
+  debugPrint('📏 ✅ Updating local cache...');
+  setState(() {
+    _localElementCache[element.id] = updatedElement;
+    
+    // 🚀 NEW: Mark this element as actively being edited
+    _activelyEditingElementId = element.id;
+  });
+  debugPrint('📏 ✅ Local cache updated');
+  debugPrint('📏 ✅ Element marked as actively editing');
+  
+  // 🚀 NEW: Reset the "editing timeout" timer
+  _editingTimeoutTimer?.cancel();
+  _editingTimeoutTimer = Timer(const Duration(seconds: 2), () {
+    debugPrint('📏 ⏰ Editing timeout - user stopped editing');
+    if (mounted) {
+      setState(() {
+        _activelyEditingElementId = null;
+      });
     }
+  });
+  
+  _propertyUpdateDebouncer?.cancel();
+  debugPrint('📏 ⏱️ Starting 500ms debounce timer...');
+  
+  _propertyUpdateDebouncer = Timer(const Duration(milliseconds: 500), () async {
+    debugPrint('📏 💾 Debounce fired - writing to database...');
+    
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) return;
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
+
+    await pagesAsync.when(
+      data: (pages) async {
+        if (pages.isEmpty || pageIndex >= pages.length) return;
+        final currentPage = pages[pageIndex];
+        final pageActions = ref.read(pageActionsProvider);
+        
+        debugPrint('📏 💾 Writing line height to database...');
+        final elementToSave = _localElementCache[element.id] ?? updatedElement;
+        final success = await pageActions.updateElement(currentPage.id, elementToSave);
+        
+        if (success) {
+          debugPrint('📏 ✅ Database write successful!');
+          debugPrint('📏 🔄 Invalidating provider...');
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          debugPrint('📏 ⏳ Waiting for provider rebuild...');
+          await Future.delayed(const Duration(milliseconds: 600));
+          
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == element.id,
+            orElse: () => element,
+          );
+          
+          debugPrint('📏 🔍 Verification:');
+          debugPrint('   Provider lineHeight: ${freshElement.lineHeight}');
+          debugPrint('   Cache lineHeight: ${elementToSave.lineHeight}');
+          
+          // 🚀 CRITICAL FIX: Only clear cache if user is NOT actively editing
+          if (_activelyEditingElementId != element.id) {
+            if ((freshElement.lineHeight ?? 1.2) == (elementToSave.lineHeight ?? 1.2)) {
+              debugPrint('📏 ✅ Provider data matches cache - safe to clear');
+              if (mounted) {
+                setState(() {
+                  _localElementCache.remove(element.id);
+                });
+              }
+              debugPrint('📏 ✅ Cache cleared');
+            } else {
+              debugPrint('📏 ⚠️ Provider data MISMATCH - keeping cache');
+            }
+          } else {
+            debugPrint('📏 🚫 User still actively editing - KEEPING cache');
+          }
+        } else {
+          debugPrint('📏 ❌ Database write failed');
+        }
+        
+        debugPrint('📏 ✅ Line height update complete');
+      },
+      loading: () {},
+      error: (_, _) {},
+    );
+  });
+  
+  debugPrint('📏 ============================================\n');
+}
+
+void _updateShadows(PageElement element, List<Shadow> newShadows) async {
+  debugPrint('🌑 ============================================');
+  debugPrint('🌑 _updateShadows CALLED');
+  debugPrint('🌑 Element ID: ${element.id}');
+  debugPrint('🌑 Old shadows: ${element.shadows?.length ?? 0}');
+  debugPrint('🌑 New shadows: ${newShadows.length}');
+  debugPrint('🌑 ============================================');
+  
+  final updatedElement = PageElement(
+    id: element.id,
+    type: element.type,
+    position: element.position,
+    size: element.size,
+    rotation: element.rotation,
+    properties: element.properties,
+    textStyle: element.textStyle,
+    textAlign: element.textAlign,
+    lineHeight: element.lineHeight,
+    shadows: newShadows,
+    locked: element.locked,
+  );
+  
+  debugPrint('🌑 ✅ Updating local cache...');
+  setState(() {
+    _localElementCache[element.id] = updatedElement;
+    
+    // 🚀 NEW: Mark this element as actively being edited
+    _activelyEditingElementId = element.id;
+  });
+  debugPrint('🌑 ✅ Local cache updated');
+  debugPrint('🌑 ✅ Element marked as actively editing');
+  
+  // 🚀 NEW: Reset the "editing timeout" timer
+  _editingTimeoutTimer?.cancel();
+  _editingTimeoutTimer = Timer(const Duration(seconds: 2), () {
+    debugPrint('🌑 ⏰ Editing timeout - user stopped editing');
+    if (mounted) {
+      setState(() {
+        _activelyEditingElementId = null;
+      });
+    }
+  });
+  
+  _propertyUpdateDebouncer?.cancel();
+  debugPrint('🌑 ⏱️ Starting 500ms debounce timer...');
+  
+  _propertyUpdateDebouncer = Timer(const Duration(milliseconds: 500), () async {
+    debugPrint('🌑 💾 Debounce fired - writing to database...');
+    
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) return;
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
+
+    await pagesAsync.when(
+      data: (pages) async {
+        if (pages.isEmpty || pageIndex >= pages.length) return;
+        final currentPage = pages[pageIndex];
+        final pageActions = ref.read(pageActionsProvider);
+        
+        debugPrint('🌑 💾 Writing shadows to database...');
+        final elementToSave = _localElementCache[element.id] ?? updatedElement;
+        final success = await pageActions.updateElement(currentPage.id, elementToSave);
+        
+        if (success) {
+          debugPrint('🌑 ✅ Database write successful!');
+          debugPrint('🌑 🔄 Invalidating provider...');
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          debugPrint('🌑 ⏳ Waiting for provider rebuild...');
+          await Future.delayed(const Duration(milliseconds: 600));
+          
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == element.id,
+            orElse: () => element,
+          );
+          
+          debugPrint('🌑 🔍 Verification:');
+          debugPrint('   Provider shadows count: ${freshElement.shadows?.length ?? 0}');
+          debugPrint('   Cache shadows count: ${elementToSave.shadows?.length ?? 0}');
+          
+          // 🚀 CRITICAL FIX: Only clear cache if user is NOT actively editing
+          if (_activelyEditingElementId != element.id) {
+            final providerShadowCount = freshElement.shadows?.length ?? 0;
+            final cacheShadowCount = elementToSave.shadows?.length ?? 0;
+            
+            if (providerShadowCount == cacheShadowCount) {
+              // Also verify shadow properties if shadows exist
+              bool shadowsMatch = true;
+              if (cacheShadowCount > 0 && providerShadowCount > 0) {
+                final cacheShadow = elementToSave.shadows!.first;
+                final providerShadow = freshElement.shadows!.first;
+                
+                shadowsMatch = (cacheShadow.blurRadius - providerShadow.blurRadius).abs() < 0.1 &&
+                              cacheShadow.color == providerShadow.color &&
+                              cacheShadow.offset == providerShadow.offset;
+              }
+              
+              if (shadowsMatch) {
+                debugPrint('🌑 ✅ Provider data matches cache - safe to clear');
+                if (mounted) {
+                  setState(() {
+                    _localElementCache.remove(element.id);
+                  });
+                }
+                debugPrint('🌑 ✅ Cache cleared');
+              } else {
+                debugPrint('🌑 ⚠️ Shadow properties MISMATCH - keeping cache');
+              }
+            } else {
+              debugPrint('🌑 ⚠️ Provider data MISMATCH - keeping cache');
+            }
+          } else {
+            debugPrint('🌑 🚫 User still actively editing - KEEPING cache');
+          }
+        } else {
+          debugPrint('🌑 ❌ Database write failed');
+        }
+        
+        debugPrint('🌑 ✅ Shadows update complete');
+      },
+      loading: () {},
+      error: (_, _) {},
+    );
+  });
+  
+  debugPrint('🌑 ============================================\n');
+}
+
+
+void _clearResizeStateOptimized(String elementId) async {
+  debugPrint('🧹 === OPTIMIZED RESIZE STATE CLEAR ===');
+  debugPrint('Element: $elementId');
+  
+  final finalSize = _elementSizes[elementId];
+  final finalPosition = _elementOffsets[elementId];
+  
+  // 🚀 Store the final values before clearing state
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) {
+    debugPrint('❌ No bookId found');
+    return;
   }
 
-  Future<void> _updateElementPositionAndSize(String elementId, Offset newPosition, Size newSize) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
+  // 🚀 Clear UI state immediately for instant visual feedback
+  setState(() {
+    _currentlyResizingId = null;
+    _resizeStartMousePosition = null;
+    _resizeStartElementSize = null;
+    _resizeStartElementPosition = null;
+  });
 
-    final snappedPosition = _snapToGridIfEnabled(newPosition);
-    final snappedSize = _snapSizeToGridIfEnabled(newSize);
+  if (finalSize == null && finalPosition == null) {
+    debugPrint('⚠️ No changes detected');
+    return;
+  }
 
-    try {
-      final pagesAsync = ref.read(bookPagesProvider);
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+  await pagesAsync.when(
+    data: (pages) async {
       final pageIndex = ref.read(currentPageIndexProvider);
-
-      await pagesAsync.when(
-        data: (pages) async {
-          if (pages.isEmpty || pageIndex >= pages.length) return;
-          
-          final currentPage = pages[pageIndex];
-          final element = currentPage.elements.firstWhere((e) => e.id == elementId);
-          
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: snappedPosition,
-            size: snappedSize,
-            rotation: element.rotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-          );
-
-          final pageActions = ref.read(pageActionsProvider);
-          await pageActions.updateElement(currentPage.id, updatedElement);
-          
-          if (mounted) {
-            setState(() {
-              _elementOffsets.remove(elementId);
-              _elementSizes.remove(elementId);
-            });
-          }
-        },
-        loading: () {},
-        error: (_, _) {},
+      if (pages.isEmpty || pageIndex >= pages.length) return;
+      
+      final currentPage = pages[pageIndex];
+      final element = currentPage.elements.firstWhere(
+        (e) => e.id == elementId,
+        orElse: () => currentPage.elements.first,
       );
-    } catch (e) {
-      debugPrint('Error updating element position and size: $e');
-      if (mounted) {
+      
+      final sizeChanged = finalSize != null && 
+          ((finalSize.width - element.size.width).abs() > 1.0 || 
+           (finalSize.height - element.size.height).abs() > 1.0);
+      
+      final positionChanged = finalPosition != null && 
+          (finalPosition - element.position).distance > 1.0;
+      
+      if (sizeChanged || positionChanged) {
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+        
+        // 🚀 CRITICAL FIX: Update database FIRST before clearing local state
+        debugPrint('💾 Writing resize changes to database...');
+        if (finalSize != null && finalPosition != null) {
+          await _updateElementPositionAndSize(elementId, finalPosition, finalSize);
+        } else if (finalSize != null) {
+          await _updateElementSize(elementId, finalSize);
+        } else if (finalPosition != null) {
+          await _updateElementPosition(elementId, finalPosition);
+        }
+        
+        // 🚀 Wait a bit for the database write to complete
+        await Future.delayed(const Duration(milliseconds: 300));
+        
+        // 🚀 Force refresh the provider to get updated data
+        ref.invalidate(bookPagesProvider(bookId));
+        
+        // 🚀 Wait for provider to update
+        await Future.delayed(const Duration(milliseconds: 200));
+        
+        // 🚀 Verify the update was successful before clearing local state
+        final updatedPages = ref.read(bookPagesProvider(bookId));
+        updatedPages.when(
+          data: (pages) {
+            if (pages.isEmpty || pageIndex >= pages.length) return;
+            final updatedPage = pages[pageIndex];
+            final updatedElement = updatedPage.elements.firstWhere(
+              (e) => e.id == elementId,
+              orElse: () => updatedPage.elements.first,
+            );
+            
+            // Only clear local state if database has the new values
+            if (finalSize != null && updatedElement.size == finalSize) {
+              setState(() => _elementSizes.remove(elementId));
+            }
+            if (finalPosition != null && updatedElement.position == finalPosition) {
+              setState(() => _elementOffsets.remove(elementId));
+            }
+            
+            debugPrint('✅ Resize complete and verified');
+          },
+          loading: () {},
+          error: (error, stack) {},
+        );
+      } else {
+        // No significant changes, clear immediately
         setState(() {
           _elementOffsets.remove(elementId);
           _elementSizes.remove(elementId);
         });
       }
-    }
+    },
+    loading: () {},
+    error: (_, _) {},
+  );
+}
+
+void _handleElementTap(String elementId) {
+  debugPrint('🔵 ELEMENT TAPPED: $elementId');
+  setState(() {
+    _selectedElementId = _selectedElementId == elementId ? null : elementId;
+  });
+}
+
+  void _handleKeyPress(KeyEvent event) {
+  // Only handle key down events
+  if (event is! KeyDownEvent) return;
+
+  final isControlPressed = HardwareKeyboard.instance.isControlPressed;
+  final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+  final key = event.logicalKey;
+
+  // Ctrl+C - Copy (placeholder)
+  if (isControlPressed && key == LogicalKeyboardKey.keyC && _selectedElementId != null) {
+    _showSnackBar('Copy - Coming Soon');
+    return;
   }
 
-  void _updateTextStyle(PageElement element, TextStyle newStyle) async {
+  // Ctrl+V - Paste (placeholder)
+  if (isControlPressed && key == LogicalKeyboardKey.keyV) {
+    _showSnackBar('Paste - Coming Soon');
+    return;
+  }
+
+  // Ctrl+D - Duplicate
+  if (isControlPressed && key == LogicalKeyboardKey.keyD && _selectedElementId != null) {
     final bookId = ref.read(currentBookIdProvider);
     if (bookId == null) return;
 
-    final pagesAsync = ref.read(bookPagesProvider);
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
     final pageIndex = ref.read(currentPageIndexProvider);
 
-    await pagesAsync.when(
-      data: (pages) async {
-        if (pages.isEmpty || pageIndex >= pages.length) return;
-        
-        final currentPage = pages[pageIndex];
-        
-        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-        
-        final updatedElement = PageElement(
-          id: element.id,
-          type: element.type,
-          position: element.position,
-          size: element.size,
-          rotation: element.rotation,
-          properties: element.properties,
-          textStyle: newStyle,
-          textAlign: element.textAlign,
-          lineHeight: element.lineHeight,
-          shadows: element.shadows,
-        );
+    pagesAsync.whenData((pages) async {
+      if (pages.isEmpty || pageIndex >= pages.length) return;
+      final currentPage = pages[pageIndex];
+      
+      final element = currentPage.elements.firstWhere(
+        (e) => e.id == _selectedElementId,
+        orElse: () => currentPage.elements.first,
+      );
 
-        final pageActions = ref.read(pageActionsProvider);
-        await pageActions.updateElement(currentPage.id, updatedElement);
-      },
-      loading: () {},
-      error: (_, _) {},
-    );
-  }
+      final newElement = PageElement(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        type: element.type,
+        position: Offset(element.position.dx + 20, element.position.dy + 20),
+        size: element.size,
+        rotation: element.rotation,
+        properties: Map.from(element.properties),
+        textStyle: element.textStyle,
+        textAlign: element.textAlign,
+        lineHeight: element.lineHeight,
+        shadows: element.shadows,
+        locked: false,
+      );
 
-  void _updateTextAlign(PageElement element, TextAlign newAlign) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
-
-    final pagesAsync = ref.read(bookPagesProvider);
-    final pageIndex = ref.read(currentPageIndexProvider);
-
-    await pagesAsync.when(
-      data: (pages) async {
-        if (pages.isEmpty || pageIndex >= pages.length) return;
-        
-        final currentPage = pages[pageIndex];
-        
-        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-        
-        final updatedElement = PageElement(
-          id: element.id,
-          type: element.type,
-          position: element.position,
-          size: element.size,
-          rotation: element.rotation,
-          properties: element.properties,
-          textStyle: element.textStyle,
-          textAlign: newAlign,
-          lineHeight: element.lineHeight,
-          shadows: element.shadows,
-        );
-
-        final pageActions = ref.read(pageActionsProvider);
-        await pageActions.updateElement(currentPage.id, updatedElement);
-      },
-      loading: () {},
-      error: (_, _) {},
-    );
-  }
-
-  void _updateLineHeight(PageElement element, double newLineHeight) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
-
-    final pagesAsync = ref.read(bookPagesProvider);
-    final pageIndex = ref.read(currentPageIndexProvider);
-
-    await pagesAsync.when(
-      data: (pages) async {
-        if (pages.isEmpty || pageIndex >= pages.length) return;
-        
-        final currentPage = pages[pageIndex];
-        
-        final updatedElement = PageElement(
-          id: element.id,
-          type: element.type,
-          position: element.position,
-          size: element.size,
-          rotation: element.rotation,
-          properties: element.properties,
-          textStyle: element.textStyle,
-          textAlign: element.textAlign,
-          lineHeight: newLineHeight,
-          shadows: element.shadows,
-        );
-
-        final pageActions = ref.read(pageActionsProvider);
-        await pageActions.updateElement(currentPage.id, updatedElement);
-      },
-      loading: () {},
-      error: (_, _) {},
-    );
-  }
-
-  void _updateShadows(PageElement element, List<Shadow> newShadows) async {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId == null) return;
-
-    final pagesAsync = ref.read(bookPagesProvider);
-    final pageIndex = ref.read(currentPageIndexProvider);
-
-    await pagesAsync.when(
-      data: (pages) async {
-        if (pages.isEmpty || pageIndex >= pages.length) return;
-        
-        final currentPage = pages[pageIndex];
-        
-        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-        
-        final updatedElement = PageElement(
-          id: element.id,
-          type: element.type,
-          position: element.position,
-          size: element.size,
-          rotation: element.rotation,
-          properties: element.properties,
-          textStyle: element.textStyle,
-          textAlign: element.textAlign,
-          lineHeight: element.lineHeight,
-          shadows: newShadows,
-        );
-
-        final pageActions = ref.read(pageActionsProvider);
-        await pageActions.updateElement(currentPage.id, updatedElement);
-      },
-      loading: () {},
-      error: (_, _) {},
-    );
-  }
-
-  void _clearResizeState(String elementId) {
-    debugPrint('=== CLEARING RESIZE STATE ===');
-    debugPrint('Element: $elementId');
-    
-    final finalSize = _elementSizes[elementId];
-    final finalPosition = _elementOffsets[elementId];
-    
-    setState(() {
-      _currentlyResizingId = null;
+      final pageActions = ref.read(pageActionsProvider);
+      await pageActions.addElement(currentPage.id, newElement);
+      setState(() => _selectedElementId = newElement.id);
+      _showSnackBar('Element duplicated');
     });
+    return;
+  }
 
-    if (finalSize != null || finalPosition != null) {
-      final bookId = ref.read(currentBookIdProvider);
-      if (bookId != null) {
-        final pagesAsync = ref.read(bookPagesProvider);
-        pagesAsync.whenData((pages) {
-          final pageIndex = ref.read(currentPageIndexProvider);
-          if (pages.isNotEmpty && pageIndex < pages.length) {
-            final currentPage = pages[pageIndex];
-            final element = currentPage.elements.firstWhere(
-              (e) => e.id == elementId,
-              orElse: () => currentPage.elements.first,
-            );
-            
-            _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-            
-            final sizeChanged = finalSize != null && finalSize != element.size;
-            final positionChanged = finalPosition != null && finalPosition != element.position;
-            
-            if (sizeChanged || positionChanged) {
-              if (finalSize != null && finalPosition != null) {
-                _updateElementPositionAndSize(elementId, finalPosition, finalSize);
-              } else if (finalSize != null) {
-                _updateElementSize(elementId, finalSize);
-              } else if (finalPosition != null) {
-                _updateElementPosition(elementId, finalPosition);
-              }
-            }
-          }
-        });
+  // Delete - Delete element
+  if (key == LogicalKeyboardKey.delete && _selectedElementId != null) {
+    _deleteElement(_selectedElementId!);
+    return;
+  }
+
+  // Ctrl+L - Lock/Unlock
+  if (isControlPressed && key == LogicalKeyboardKey.keyL && _selectedElementId != null) {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) return;
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
+
+    pagesAsync.whenData((pages) async {
+      if (pages.isEmpty || pageIndex >= pages.length) return;
+      final currentPage = pages[pageIndex];
+      final pageActions = ref.read(pageActionsProvider);
+      await pageActions.toggleElementLock(currentPage.id, _selectedElementId!);
+      
+      final element = currentPage.elements.firstWhere((e) => e.id == _selectedElementId);
+      _showSnackBar(element.locked ? 'Element unlocked' : 'Element locked');
+    });
+    return;
+  }
+
+  // Ctrl+] - Bring to Front
+  if (isControlPressed && key == LogicalKeyboardKey.bracketRight && _selectedElementId != null) {
+    _handleContextMenuAction('bring_to_front', 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].elements
+        .firstWhere((e) => e.id == _selectedElementId), 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].id
+    );
+    return;
+  }
+
+  // ] - Bring Forward
+  if (!isControlPressed && key == LogicalKeyboardKey.bracketRight && _selectedElementId != null) {
+    _handleContextMenuAction('bring_forward', 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].elements
+        .firstWhere((e) => e.id == _selectedElementId), 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].id
+    );
+    return;
+  }
+
+  // Ctrl+[ - Send to Back
+  if (isControlPressed && key == LogicalKeyboardKey.bracketLeft && _selectedElementId != null) {
+    _handleContextMenuAction('send_to_back', 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].elements
+        .firstWhere((e) => e.id == _selectedElementId), 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].id
+    );
+    return;
+  }
+
+  // [ - Send Backward
+  if (!isControlPressed && key == LogicalKeyboardKey.bracketLeft && _selectedElementId != null) {
+    _handleContextMenuAction('send_backward', 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].elements
+        .firstWhere((e) => e.id == _selectedElementId), 
+      ref.read(bookPagesProvider(widget.bookId!)).value![ref.read(currentPageIndexProvider)].id
+    );
+    return;
+  }
+
+  // Ctrl+Z - Undo
+  if (isControlPressed && key == LogicalKeyboardKey.keyZ && !isShiftPressed) {
+    if (_undoRedoManager.canUndo) _undo();
+    return;
+  }
+
+  // Ctrl+Shift+Z or Ctrl+Y - Redo
+  if ((isControlPressed && isShiftPressed && key == LogicalKeyboardKey.keyZ) ||
+      (isControlPressed && key == LogicalKeyboardKey.keyY)) {
+    if (_undoRedoManager.canRedo) _redo();
+    return;
+  }
+
+  // Enter - Edit text element
+  if (key == LogicalKeyboardKey.enter && _selectedElementId != null) {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) return;
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    final pageIndex = ref.read(currentPageIndexProvider);
+
+    pagesAsync.whenData((pages) {
+      if (pages.isEmpty || pageIndex >= pages.length) return;
+      final currentPage = pages[pageIndex];
+      
+      final element = currentPage.elements.firstWhere(
+        (e) => e.id == _selectedElementId,
+        orElse: () => currentPage.elements.first,
+      );
+
+      if (element.type == ElementType.text && !element.locked) {
+        _editTextElement(element);
       }
-    }
-    
-    if (mounted) {
-      setState(() {
-        _elementOffsets.remove(elementId);
-        _elementSizes.remove(elementId);
-      });
-    }
-    
-    debugPrint('Resize state cleared successfully');
-  }
-
-  void _handleElementTap(String elementId) {
-    setState(() {
-      _selectedElementId = _selectedElementId == elementId ? null : elementId;
     });
+    return;
   }
+}
 
-  void _editTextElement(PageElement element) {
-    showDialog(
-      context: context,
-      builder: (context) => AdvancedTextEditorDialog(
-        element: element,
-        onSave: (String newText, bool isList) async {
-          final bookId = ref.read(currentBookIdProvider);
-          if (bookId == null) return;
+void _editTextElement(PageElement element) {
+  debugPrint('🎯 === EDIT TEXT ELEMENT CALLED ===');
+  debugPrint('🎯 Element ID: ${element.id}');
+  debugPrint('🎯 Element Type: ${element.type}');
+  debugPrint('🎯 Current Text: ${element.properties['text']}');
+  debugPrint('🎯 Is Locked: ${element.locked}');
+  
+  showDialog(
+    context: context,
+    builder: (context) => AdvancedTextEditorDialog(
+      element: element,
+      onSave: (String newText, bool isList) async {
+        debugPrint('💾 === ADVANCED TEXT EDITOR ON SAVE ===');
+        debugPrint('💾 New Text: $newText');
+        debugPrint('💾 Is List: $isList');
+        debugPrint('💾 Original Text: ${element.properties['text']}');
 
-          final pagesAsync = ref.read(bookPagesProvider);
-          final pageIndex = ref.read(currentPageIndexProvider);
+        final bookId = ref.read(currentBookIdProvider);
+        if (bookId == null) {
+          debugPrint('❌ No book ID found in onSave!');
+          return;
+        }
 
-          await pagesAsync.when(
-            data: (pages) async {
-              if (pages.isEmpty || pageIndex >= pages.length) return;
+        final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+        final pageIndex = ref.read(currentPageIndexProvider);
+
+        await pagesAsync.when(
+          data: (pages) async {
+            debugPrint('📄 === PAGES DATA LOADED FOR SAVE ===');
+            debugPrint('📄 Total pages: ${pages.length}');
+            debugPrint('📄 Current page index: $pageIndex');
+
+            if (pages.isEmpty || pageIndex >= pages.length) {
+              debugPrint('❌ Invalid page index or empty pages!');
+              return;
+            }
+
+            final currentPage = pages[pageIndex];
+            debugPrint('📄 Current Page ID: ${currentPage.id}');
               
-              final currentPage = pages[pageIndex];
+            _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+            debugPrint('✅ Undo state saved');
               
-              _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+            final updatedProperties = Map<String, dynamic>.from(element.properties);
+            updatedProperties['text'] = newText;
+            updatedProperties['isList'] = isList;
+            
+            debugPrint('🔄 Creating updated element...');
+            final updatedElement = PageElement(
+              id: element.id,
+              type: element.type,
+              position: element.position,
+              size: element.size,
+              rotation: element.rotation,
+              properties: updatedProperties,
+              textStyle: element.textStyle,
+              textAlign: element.textAlign,
+              lineHeight: element.lineHeight,
+              shadows: element.shadows,
+              locked: element.locked,
+            );
+
+            debugPrint('🔄 Updated element properties: ${updatedElement.properties}');
+
+            // 🚀 CRITICAL FIX: Update local cache for instant UI feedback
+            debugPrint('🎯 Updating local cache for instant UI update...');
+            setState(() {
+              _localElementCache[element.id] = updatedElement;
+              _activelyEditingElementId = element.id;
+            });
+
+            final pageActions = ref.read(pageActionsProvider);
+            debugPrint('💾 Writing to database...');
+            final success = await pageActions.updateElement(currentPage.id, updatedElement);
+            
+            if (success) {
+              debugPrint('✅ Database write successful!');
+              debugPrint('🔄 Invalidating provider to refresh data...');
+              ref.invalidate(bookPagesProvider(bookId));
               
-              final updatedProperties = Map<String, dynamic>.from(element.properties);
-              updatedProperties['text'] = newText;
-              updatedProperties['isList'] = isList;
+              // Wait for provider to update
+              await Future.delayed(const Duration(milliseconds: 300));
               
-              final updatedElement = PageElement(
-                id: element.id,
-                type: element.type,
-                position: element.position,
-                size: element.size,
-                rotation: element.rotation,
-                properties: updatedProperties,
-                textStyle: element.textStyle,
-                textAlign: element.textAlign,
-                lineHeight: element.lineHeight,
-                shadows: element.shadows,
+              // Verify the update
+              final freshPages = await ref.read(bookPagesProvider(bookId).future);
+              final freshElement = freshPages[pageIndex].elements.firstWhere(
+                (e) => e.id == element.id,
+                orElse: () => element,
               );
+              
+              debugPrint('🔍 Verification:');
+              debugPrint('   Provider text: ${freshElement.properties['text']}');
+              debugPrint('   Cache text: ${updatedElement.properties['text']}');
+              
+              // Only clear cache if user is not actively editing
+              if (_activelyEditingElementId != element.id) {
+                if (freshElement.properties['text'] == updatedElement.properties['text']) {
+                  debugPrint('✅ Provider data matches cache - safe to clear');
+                  if (mounted) {
+                    setState(() {
+                      _localElementCache.remove(element.id);
+                    });
+                  }
+                } else {
+                  debugPrint('⚠️ Provider data MISMATCH - keeping cache');
+                }
+              } else {
+                debugPrint('🚫 User still actively editing - KEEPING cache');
+              }
+            } else {
+              debugPrint('❌ Database write failed!');
+            }
+          },
+          loading: () {
+            debugPrint('⏳ Pages loading...');
+          },
+          error: (error, stack) {
+            debugPrint('❌ Error in text save: $error');
+          },
+        );
+      },
+    ),
+  );
+}
 
-              final pageActions = ref.read(pageActionsProvider);
-              await pageActions.updateElement(currentPage.id, updatedElement);
-            },
-            loading: () {},
-            error: (_, _) {},
-          );
-        },
-      ),
-    );
-  }
+
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1114,136 +2294,138 @@ void _addVideoElement() async {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(color: Colors.orange),
-        ),
-      );
-    }
-
-    final bookId = ref.watch(currentBookIdProvider);
-    if (bookId == null) {
-      return Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, size: 64, color: Colors.red),
-              const SizedBox(height: 16),
-              Text(_errorMessage ?? 'Failed to create book'),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Go Back'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final backgroundColor = _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite;
-    final appBarColor = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
-    final textColor = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
-
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      appBar: _buildAppBar(appBarColor, textColor, bookId),
-      body: Column(
-        children: [
-        EditorToolbar(
-          appBarColor: appBarColor,
-          textColor: textColor,
-          bookId: bookId,
-          onAddText: _addTextElement,
-          onAddImage: _addImageElement,
-          onAddShape: _addShapeElement,
-          onAddAudio: _addAudioElement,      // ← ADD THIS
-          onAddVideo: _addVideoElement,      // ← ADD THIS
-          onDelete: _selectedElementId != null ? () => _deleteElement(_selectedElementId!) : null,
-          onUndo: _undoRedoManager.canUndo ? _undo : null,
-          onRedo: _undoRedoManager.canRedo ? _redo : null,
-          hasSelectedElement: _selectedElementId != null,
-          canUndo: _undoRedoManager.canUndo,
-          canRedo: _undoRedoManager.canRedo,
-          onToggleGrid: () => setState(() => _gridEnabled = !_gridEnabled),
-          gridEnabled: _gridEnabled,
-          onBackgroundSettings: _showBackgroundSettings,
-        ),
-          Expanded(
-            child: Row(
-            children: [
-              PagesPanel(
-                panelColor: appBarColor,
-                textColor: textColor,
-                bookId: bookId,
-              ),
-              Expanded(
-                child: _buildEditorArea(bookId),
-              ),
-              PropertiesPanel(
-                bookId: bookId,
-                selectedElementId: _selectedElementId,
-                panelColor: appBarColor,
-                textColor: textColor,
-                onUpdateTextStyle: _updateTextStyle,
-                onUpdateTextAlign: _updateTextAlign,
-                onUpdateLineHeight: _updateLineHeight,
-                onUpdateShadows: _updateShadows,
-                onEditText: _editTextElement,
-                onClearSliderState: () {},
-                onElementSelected: (id) => setState(() => _selectedElementId = id),
-                onLayerOrderChanged: (newOrder) {
-                  // Layer reordering now handled inside PropertiesPanel
-                  _showSnackBar('Layer order updated');
-                },
-              ),
-            ],
-          ),
-          ),
-        ],
+@override
+Widget build(BuildContext context) {
+  if (_isLoading) {
+    return const Scaffold(
+      body: Center(
+        child: CircularProgressIndicator(color: Colors.orange),
       ),
     );
   }
 
- PreferredSizeWidget _buildAppBar(Color appBarColor, Color textColor, String bookId) {
+  final bookId = ref.watch(currentBookIdProvider);
+  if (bookId == null) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: Colors.red),
+            const SizedBox(height: 16),
+            Text(_errorMessage ?? 'Failed to create book'),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Go Back'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  final backgroundColor = _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite;
+  final appBarColor = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
+  final textColor = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
+
+  return KeyboardListener(
+    focusNode: FocusNode()..requestFocus(),
+    autofocus: true,
+    onKeyEvent: _handleKeyPress,
+    child: Scaffold(
+      backgroundColor: backgroundColor,
+      appBar: _buildAppBar(appBarColor, textColor, bookId),
+      body: Column(
+        children: [
+          EditorToolbar(
+            appBarColor: appBarColor,
+            textColor: textColor,
+            bookId: bookId,
+            onAddText: _addTextElement,
+            onAddImage: _addImageElement,
+            onAddShape: _addShapeElement,
+            onAddAudio: _addAudioElement,
+            onAddVideo: _addVideoElement,
+            onDelete: _selectedElementId != null ? () => _deleteElement(_selectedElementId!) : null,
+            onUndo: _undoRedoManager.canUndo ? _undo : null,
+            onRedo: _undoRedoManager.canRedo ? _redo : null,
+            hasSelectedElement: _selectedElementId != null,
+            canUndo: _undoRedoManager.canUndo,
+            canRedo: _undoRedoManager.canRedo,
+            onToggleGrid: () => setState(() => _gridEnabled = !_gridEnabled),
+            gridEnabled: _gridEnabled,
+            onBackgroundSettings: _showBackgroundSettings,
+          ),
+          Expanded(
+            child: Row(
+              children: [
+                PagesPanel(
+                  panelColor: appBarColor,
+                  textColor: textColor,
+                  bookId: bookId,
+                ),
+                Expanded(
+                  child: _buildEditorArea(bookId),
+                ),
+                RepaintBoundary(
+        child: PropertiesPanel(
+          bookId: bookId,
+          selectedElementId: _selectedElementId,
+          panelColor: appBarColor,
+          textColor: textColor,
+          localElementCache: _localElementCache,
+          onUpdateTextStyle: _updateTextStyle,
+          onUpdateTextAlign: _updateTextAlign,
+          onUpdateLineHeight: _updateLineHeight,
+          onUpdateShadows: _updateShadows,
+          onEditText: _editTextElement,
+          onElementSelected: (id) => setState(() => _selectedElementId = id),
+          onLayerOrderChanged: (newOrder) {
+            _showSnackBar('Layer order updated');
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+PreferredSizeWidget _buildAppBar(Color appBarColor, Color textColor, String bookId) {
   final bookAsync = ref.watch(bookProvider(bookId));
 
   return AppBar(
     backgroundColor: appBarColor,
     foregroundColor: textColor,
     elevation: 2,
-    toolbarHeight: 90 , // Make taller for search bar
-    title: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Row 1: Title
-        bookAsync.when(
-          data: (book) => Text(
+    // ✅ UPDATED TITLE WITH CANVAS SIZE INFO
+    title: bookAsync.when(
+      data: (book) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
             book?.title ?? 'Untitled',
-            style: AppTheme.headline.copyWith(color: textColor, fontSize: 16),
+            style: AppTheme.headline.copyWith(color: textColor, fontSize: 18),
             overflow: TextOverflow.ellipsis,
           ),
-          loading: () => const Text('Loading...', style: TextStyle(fontSize: 16)),
-          error: (_, _) => const Text('Error', style: TextStyle(fontSize: 16)),
-        ),
-        const SizedBox(height: 8),
-        // Row 2: Search Bar
-        SizedBox(
-          height: 40,
-          width: 400,
-          child: SmartSearchBar(
-            backgroundColor: _isDarkMode ? Colors.grey.shade800 : Colors.white,
-            textColor: textColor,
-            compact: true,
-            hintText: 'Search books from the internet...',
-          ),
-        ),
-      ],
+          if (book?.pageSize != null)
+            Text(
+              '${book!.pageSize.width.toInt()}×${book.pageSize.height.toInt()}px • ${book.pageSize.orientation}',
+              style: TextStyle(
+                fontSize: 11,
+                color: textColor.withValues(alpha: 0.6),
+                fontWeight: FontWeight.normal,
+              ),
+            ),
+        ],
+      ),
+      loading: () => const Text('Loading...', style: TextStyle(fontSize: 18)),
+      error: (_, _) => const Text('Error', style: TextStyle(fontSize: 18)),
     ),
     leading: IconButton(
       icon: const Icon(Icons.arrow_back),
@@ -1270,11 +2452,11 @@ void _addVideoElement() async {
           },
           tooltip: 'Save',
         ),
-      IconButton(
-        icon: const Icon(Icons.preview),
-        onPressed: () => _showSnackBar('Preview - Coming Soon'),
-        tooltip: 'Preview',
-      ),
+        IconButton(
+          icon: const Icon(Icons.preview),
+          onPressed: () => _handlePreview(),
+          tooltip: 'Preview Book',
+        ),
       IconButton(
         icon: Icon(_isDarkMode ? Icons.light_mode : Icons.dark_mode),
         onPressed: () => setState(() => _isDarkMode = !_isDarkMode),
@@ -1352,63 +2534,281 @@ void _addVideoElement() async {
     );
   }
 
-  Widget _buildEditorArea(String bookId) {
-    final pagesAsync = ref.watch(bookPagesProvider);
-    final pageIndex = ref.watch(currentPageIndexProvider);
+Widget _buildEditorArea(String bookId) {
+  final pagesAsync = ref.watch(bookPagesProvider(widget.bookId!));
+  final pageIndex = ref.watch(currentPageIndexProvider);
 
-    return pagesAsync.when(
-      data: (pages) {
-        if (pages.isEmpty || pageIndex >= pages.length) {
-          return const Center(child: Text('No page available'));
-        }
+  return pagesAsync.when(
+    data: (pages) {
+      debugPrint('🔄 _buildEditorArea REBUILT with ${pages.length} pages');
+      if (pages.isEmpty || pageIndex >= pages.length) {
+        return const Center(child: Text('No page available'));
+      }
 
-        final currentPage = pages[pageIndex];
-        
-        return Container(
-          margin: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: currentPage.background.color,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Stack(
-              children: [
-                // Background image if exists
-                if (currentPage.background.imageUrl != null)
-                  Positioned.fill(
-                    child: Image.network(
-                      currentPage.background.imageUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => const SizedBox(),
+      final currentPage = pages[pageIndex];
+      
+      // ✅ Get actual canvas dimensions
+      final canvasWidth = currentPage.pageSize?.width ?? 800;
+      final canvasHeight = currentPage.pageSize?.height ?? 600;
+
+      // ✅ CENTER CANVAS ON BUILD
+      _centerCanvas(canvasWidth, canvasHeight);
+
+      return Stack(
+        children: [
+          // ✅ MAIN SCROLLABLE CANVAS AREA - WITH CONTROLLERS
+          Container(
+            color: _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite,
+            child: SingleChildScrollView(
+              controller: _verticalScrollController,
+              scrollDirection: Axis.vertical,
+              child: Center(  // ✅ ADDED CENTER FOR VERTICAL
+                child: SingleChildScrollView(
+                  controller: _horizontalScrollController,
+                  scrollDirection: Axis.horizontal,
+                  child: Center(  // ✅ ADDED CENTER FOR HORIZONTAL
+                    child: Padding(
+                      padding: const EdgeInsets.all(40),
+                      child: Transform.scale(
+                        scale: _zoomLevel,
+                        alignment: Alignment.center,  // ✅ CHANGED FROM topLeft TO center
+                        child: Listener(
+                          behavior: HitTestBehavior.translucent,
+                          onPointerDown: (event) {
+                            if (event.buttons == kSecondaryButton) {
+                              // Event consumed
+                            }
+                            if (event.buttons == kPrimaryButton) {
+                              setState(() => _selectedElementId = null);
+                            }
+                          },
+                          child: Container(
+                            width: canvasWidth,
+                            height: canvasHeight,
+                            decoration: BoxDecoration(
+                              color: currentPage.background.color,
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha:0.2),
+                                  blurRadius: 20,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Stack(
+                                children: [
+                                  if (currentPage.background.imageUrl != null)
+                                    Positioned.fill(
+                                      child: Image.network(
+                                        currentPage.background.imageUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error, stackTrace) => const SizedBox(),
+                                      ),
+                                    ),
+                                  
+                                  if (_gridEnabled) _buildGridOverlay(),
+                                  
+                                  ...currentPage.elements.map((element) {
+                                    return _buildDraggableElement(element, currentPage.id);
+                                  }),
+                                  
+                                  if (currentPage.elements.isEmpty) _buildEmptyState(),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                
-                // Grid overlay
-                if (_gridEnabled) _buildGridOverlay(),
-                
-                // Elements
-                ...currentPage.elements.map((element) {
-                  return _buildDraggableElement(element, currentPage.id);
-                }),
-                
-                if (currentPage.elements.isEmpty) _buildEmptyState(),
+                ),
+              ),
+            ),
+          ),
+          
+          // ✅ ZOOM CONTROLS OVERLAY (Bottom Right)
+          Positioned(
+            bottom: 20,
+            right: 20,
+            child: _buildZoomControls(),
+          ),
+        ],
+      );
+    },
+    loading: () => const Center(child: CircularProgressIndicator()),
+    error: (error, _) => Center(child: Text('Error: $error')),
+  );
+}
+
+Widget _buildZoomControls() {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.15),
+          blurRadius: 10,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Zoom Out Button
+        IconButton(
+          icon: const Icon(Icons.remove, size: 18),
+          onPressed: _zoomLevel > _minZoom ? _zoomOut : null,
+          tooltip: 'Zoom Out (10%)',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          style: IconButton.styleFrom(
+            backgroundColor: _zoomLevel > _minZoom 
+                ? Colors.grey.shade100 
+                : Colors.grey.shade200,
+          ),
+        ),
+        
+        const SizedBox(width: 8),
+        
+        // Slider with draggable circle
+        SizedBox(
+          width: 180,
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 4,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+              activeTrackColor: Colors.blue,
+              inactiveTrackColor: Colors.grey.shade300,
+              thumbColor: Colors.blue,
+              overlayColor: Colors.blue.withValues(alpha: 0.2),
+            ),
+            child: Slider(
+              value: _zoomLevel,
+              min: _minZoom,
+              max: _maxZoom,
+              onChanged: (value) {
+                setState(() {
+                  _zoomLevel = value;
+                });
+              },
+            ),
+          ),
+        ),
+        
+        const SizedBox(width: 8),
+        
+        // Zoom In Button
+        IconButton(
+          icon: const Icon(Icons.add, size: 18),
+          onPressed: _zoomLevel < _maxZoom ? _zoomIn : null,
+          tooltip: 'Zoom In (10%)',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          style: IconButton.styleFrom(
+            backgroundColor: _zoomLevel < _maxZoom 
+                ? Colors.grey.shade100 
+                : Colors.grey.shade200,
+          ),
+        ),
+        
+        const SizedBox(width: 8),
+        const VerticalDivider(width: 1, thickness: 1),
+        const SizedBox(width: 8),
+        
+        // Zoom Percentage Dropdown
+        PopupMenuButton<double>(
+          onSelected: _setZoom,
+          tooltip: 'Zoom presets',
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _getZoomPercentage(),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.arrow_drop_down, size: 18),
               ],
             ),
           ),
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Error: $error')),
-    );
-  }
+          itemBuilder: (context) => [
+            ..._zoomPresets.map((zoom) => PopupMenuItem(
+              value: zoom,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('${(zoom * 100).round()}%'),
+                  if (zoom == _zoomLevel)
+                    const Icon(Icons.check, size: 16, color: Colors.blue),
+                ],
+              ),
+            )),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 0.5,
+              child: Row(
+                children: [
+                  Icon(Icons.fit_screen, size: 16),
+                  SizedBox(width: 8),
+                  Text('Fit to Window (50%)'),
+                ],
+              ),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 1.0,
+              child: Row(
+                children: [
+                  Icon(Icons.aspect_ratio, size: 16),
+                  SizedBox(width: 8),
+                  Text('Actual Size (100%)'),
+                ],
+              ),
+            ),
+          ],
+        ),
+        
+        const SizedBox(width: 8),
+        const VerticalDivider(width: 1, thickness: 1),
+        const SizedBox(width: 8),
+        
+        // Reset Zoom Button
+        IconButton(
+          icon: const Icon(Icons.restart_alt, size: 18),
+          onPressed: _zoomLevel != 0.5 ? _resetZoom : null,
+          tooltip: 'Reset Zoom (50%)',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          style: IconButton.styleFrom(
+            backgroundColor: _zoomLevel != 0.5 
+                ? Colors.blue.shade50 
+                : Colors.grey.shade200,
+            foregroundColor: _zoomLevel != 0.5 
+                ? Colors.blue 
+                : Colors.grey.shade400,
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildGridOverlay() {
     return CustomPaint(
@@ -1420,442 +2820,805 @@ void _addVideoElement() async {
     );
   }
 
-  Widget _buildDraggableElement(PageElement element, String pageId) {
-    final isSelected = _selectedElementId == element.id;
-    final isDragging = _currentlyDraggingId == element.id;
-    final isResizing = _currentlyResizingId == element.id;
-    final isRotating = _currentlyRotatingId == element.id;
-    
-    final currentPosition = _elementOffsets[element.id] ?? element.position;
-    final currentSize = _elementSizes[element.id] ?? element.size;
-    final currentRotation = _elementRotations[element.id] ?? element.rotation;
+Widget _buildDraggableElement(PageElement element, String pageId) {
+  final isSelected = _selectedElementId == element.id;
+  final isDragging = _currentlyDraggingId == element.id;
+  final isResizing = _currentlyResizingId == element.id;
+  final isRotating = _currentlyRotatingId == element.id;
+  
+  // 🚀 ENHANCED: Use cache with fallback to element data
+  // During interaction, prefer cache. After interaction, use provider data.
+  final currentSize = _elementSizes[element.id] ?? element.size;
+  final currentRotation = _elementRotations[element.id] ?? element.rotation;
 
-    return Positioned(
-      left: currentPosition.dx,
-      top: currentPosition.dy,
-      child: Transform.rotate(
-        angle: currentRotation,
-        child: GestureDetector(
-          onTap: isResizing || isRotating ? null : () => _handleElementTap(element.id),
-          onDoubleTap: isResizing || isRotating ? null : () {
-            if (element.type == ElementType.text) {
-              _editTextElement(element);
-            }
-          },
-          onPanStart: isResizing || isRotating ? null : (details) {
-            setState(() {
-              _currentlyDraggingId = element.id;
-              _elementOffsets[element.id] = element.position;
-            });
-          },
-          onPanUpdate: isResizing || isRotating ? null : (details) {
-            setState(() {
-              final currentPos = _elementOffsets[element.id] ?? element.position;
-              _elementOffsets[element.id] = Offset(
-                currentPos.dx + details.delta.dx,
-                currentPos.dy + details.delta.dy,
-              );
-            });
-          },
-          onPanEnd: isResizing || isRotating ? null : (details) async {
-            final finalPosition = _elementOffsets[element.id] ?? element.position;
-            
-            setState(() {
-              _currentlyDraggingId = null;
-            });
+  final isInteractiveElement = element.type == ElementType.video || 
+                                element.type == ElementType.audio;
 
-            if (finalPosition != element.position) {
-              await _updateElementPosition(element.id, finalPosition);
-            } else {
-              setState(() {
-                _elementOffsets.remove(element.id);
-              });
-            }
-          },
-          onPanCancel: isResizing || isRotating ? null : () {
-            setState(() {
-              _currentlyDraggingId = null;
-              _elementOffsets.remove(element.id);
-            });
-          },
-          child: Container(
-            width: currentSize.width,
-            height: currentSize.height,
-            clipBehavior: Clip.hardEdge,
-            decoration: BoxDecoration(
-              border: isSelected
-                  ? Border.all(color: Colors.blue, width: 2)
-                  : Border.all(color: Colors.transparent, width: 2),
-              boxShadow: isResizing ? [
-                BoxShadow(
-                  color: Colors.blue.withValues(alpha: 0.3),
-                  blurRadius: 8,
-                  spreadRadius: 2,
-                ),
-              ] : null,
-            ),
-            child: Stack(
-              children: [
-                IgnorePointer(
-                  ignoring: isResizing || isRotating,
-                  child: SizedBox(
-                    width: double.infinity,
-                    height: double.infinity,
-                    child: _buildElementContent(element),
+  // 🚀 OPTIMIZED: Wrap with ValueListenableBuilder for smooth dragging without rebuilds
+  return ValueListenableBuilder<Offset>(
+    valueListenable: _dragPositionNotifiers[element.id] ?? ValueNotifier(element.position),
+    builder: (context, dragPosition, child) {
+      // ✅ Priority order for position:
+      // 1. If actively dragging: use ValueNotifier position (smooth, no rebuilds)
+      // 2. If cache exists: use cached position (waiting for database confirmation)
+      // 3. Fallback: use provider position (database confirmed)
+      final displayPosition = isDragging 
+          ? dragPosition 
+          : (_elementOffsets[element.id] ?? element.position);
+        
+      return Positioned(
+        left: displayPosition.dx,
+        top: displayPosition.dy,
+        child: Transform.rotate(
+          angle: currentRotation,
+          alignment: Alignment.center,
+          child: child!,
+        ),
+      );
+    },
+    child: Stack(
+      clipBehavior: Clip.none,
+      children: [
+        // ========== MAIN DRAGGABLE CONTENT ==========
+        MouseRegion(
+          cursor: element.locked 
+              ? SystemMouseCursors.forbidden 
+              : (isDragging ? SystemMouseCursors.grabbing : SystemMouseCursors.grab),
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (event) {
+              if (event.buttons == kSecondaryButton) {
+                // Right-click handled by GestureDetector
+              }
+            },
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: (isResizing || isRotating || _currentlyRotatingId != null) 
+                  ? null 
+                  : () {
+                      if (isInteractiveElement) {
+                        // 🚀 OPTIMIZED: Direct state update, no setState
+                        _selectedElementId = element.id;
+                        // Force minimal rebuild for selection border only
+                        if (mounted) setState(() {});
+                      } else {
+                        _handleElementTap(element.id);
+                      }
+                    },
+              onSecondaryTapDown: isResizing || isRotating ? null : (details) {
+                _showElementContextMenu(context, details.globalPosition, element, pageId);
+              },
+              onDoubleTap: isResizing || isRotating ? null : () {
+                if (element.type == ElementType.text) {
+                  if (element.locked) {
+                    _showSnackBar('Element is locked. Unlock it to edit.');
+                    return;
+                  }
+                  _editTextElement(element);
+                }
+              },
+              onPanStart: isResizing || isRotating || element.locked ? null : (details) {
+                if (element.locked) {
+                  _showSnackBar('Element is locked. Unlock it to move.');
+                  return;
+                }
+                
+                // ✅ STEP 1: Initialize ValueNotifier if needed
+                if (!_dragPositionNotifiers.containsKey(element.id)) {
+                  _dragPositionNotifiers[element.id] = ValueNotifier<Offset>(element.position);
+                }
+                
+                // ✅ STEP 2: Calculate mouse offset from element's top-left corner
+                // This makes the element "stick" where you click it
+                final currentElementPos = _elementOffsets[element.id] ?? element.position;
+                _dragMouseOffset = details.localPosition;
+                
+                // ✅ STEP 3: Store initial state (NO setState - just data updates)
+                _selectedElementId = element.id;
+                _currentlyDraggingId = element.id;
+                _dragStartGlobalMousePosition = details.globalPosition;
+                _dragStartElementPosition = currentElementPos;
+                _originalPositions[element.id] = element.position; // For undo
+                
+                // ✅ STEP 4: Initialize working state
+                _elementOffsets[element.id] = currentElementPos;
+                _dragPositionNotifiers[element.id]!.value = currentElementPos;
+                
+                debugPrint('🎯 DRAG START | Element: ${element.id.substring(0, 8)} | Offset from top-left: $_dragMouseOffset');
+              },
+
+              onPanUpdate: isResizing || isRotating || element.locked ? null : (details) {
+                if (_dragStartGlobalMousePosition == null || 
+                    _dragStartElementPosition == null ||
+                    _dragMouseOffset == null) {
+                  return;
+                }
+                
+                // ✅ Calculate total movement in global space (zoom-independent)
+                final currentGlobalMouse = details.globalPosition;
+                final globalDelta = currentGlobalMouse - _dragStartGlobalMousePosition!;
+                
+                // ✅ Scale delta by zoom to get canvas space movement
+                final canvasDelta = Offset(
+                  globalDelta.dx / _zoomLevel,
+                  globalDelta.dy / _zoomLevel,
+                );
+                
+                // ✅ Calculate new position maintaining the click offset
+                final newPosition = _dragStartElementPosition! + canvasDelta;
+                
+                // ✅ UPDATE ONLY ValueNotifier (triggers ONLY the Positioned widget)
+                _dragPositionNotifiers[element.id]?.value = newPosition;
+                
+                // Keep backup for database write (don't trigger rebuild)
+                _elementOffsets[element.id] = newPosition;
+              },
+
+onPanEnd: isResizing || isRotating || element.locked ? null : (details) {
+  final elementId = element.id;
+  final finalPosition = _elementOffsets[elementId] ?? element.position;
+  final originalPosition = _originalPositions[elementId] ?? element.position;
+
+  // ✅ STEP 1: Clear input state immediately
+  _dragStartGlobalMousePosition = null;
+  _dragStartElementPosition = null;
+  _dragMouseOffset = null;
+  
+  // ✅ STEP 2: Check if position actually changed
+  final distanceMoved = (finalPosition - originalPosition).distance;
+  
+  if (distanceMoved < 1.0) {
+    // No movement - just cleanup
+    _currentlyDraggingId = null;
+    _elementOffsets.remove(elementId);
+    _originalPositions.remove(elementId);
+    if (mounted) setState(() {});
+    debugPrint('⚡ Drag end - no movement');
+    return;
+  }
+
+  debugPrint('💾 Drag end - saving ${distanceMoved.toStringAsFixed(1)}px movement');
+
+  // ✅ STEP 3: Clear drag state IMMEDIATELY for instant UI response
+  _currentlyDraggingId = null;
+  _originalPositions.remove(elementId);
+  // DON'T clear _elementOffsets yet - keep as cache
+  
+  if (mounted) setState(() {});
+  
+  debugPrint('✅ UI updated instantly - starting background save');
+
+  // ✅ STEP 4: Write to database in background (non-blocking)
+  _saveElementPositionToDatabase(
+    elementId: elementId,
+    element: element,
+    finalPosition: finalPosition,
+  );
+},
+
+              onPanCancel: isResizing || isRotating || element.locked ? null : () {
+                debugPrint('❌ Drag cancelled');
+                
+                // ✅ Instant cleanup - revert to original position
+                final elementId = element.id;
+                final originalPos = _originalPositions[elementId] ?? element.position;
+                
+                _dragPositionNotifiers[elementId]?.value = originalPos;
+                
+                // Clear all drag state
+                _currentlyDraggingId = null;
+                _dragStartGlobalMousePosition = null;
+                _dragStartElementPosition = null;
+                _dragMouseOffset = null;
+                _elementOffsets.remove(elementId);
+                _originalPositions.remove(elementId);
+                
+                if (mounted) setState(() {});
+              },
+              
+              child: _SelectionBorder(
+                isSelected: isSelected,
+                isLocked: element.locked,
+                child: RepaintBoundary( // ✅ RepaintBoundary wraps only the content
+                  child: Container(
+                    width: currentSize.width,
+                    height: currentSize.height,
+                    clipBehavior: Clip.hardEdge,
+                    decoration: const BoxDecoration(),
+                    child: IgnorePointer(
+                      ignoring: isResizing || isRotating,
+                      child: _buildElementContent(
+                        element, 
+                        allowInteraction: !isDragging && !isResizing && !isRotating
+                      ),
+                    ),
                   ),
                 ),
-                if (isSelected && !isDragging) ...[
-                  // Resize handles
-                  _buildResizeHandle(element: element, alignment: Alignment.topLeft, icon: Icons.north_west),
-                  _buildResizeHandle(element: element, alignment: Alignment.topCenter, icon: Icons.north),
-                  _buildResizeHandle(element: element, alignment: Alignment.topRight, icon: Icons.north_east),
-                  _buildResizeHandle(element: element, alignment: Alignment.centerRight, icon: Icons.east),
-                  _buildResizeHandle(element: element, alignment: Alignment.bottomRight, icon: Icons.south_east),
-                  _buildResizeHandle(element: element, alignment: Alignment.bottomCenter, icon: Icons.south),
-                  _buildResizeHandle(element: element, alignment: Alignment.bottomLeft, icon: Icons.south_west),
-                  _buildResizeHandle(element: element, alignment: Alignment.centerLeft, icon: Icons.west),
-                  
-                  // Rotation handle
-                  _buildRotationHandle(element),
+              ),
+            ),
+          ),
+        ),
+        
+        // ========== RESIZE HANDLES ==========
+        if (isSelected && !isDragging && !element.locked) ...[
+          _buildResizeHandle(element: element, alignment: Alignment.topLeft, icon: Icons.north_west),
+          _buildResizeHandle(element: element, alignment: Alignment.topCenter, icon: Icons.north),
+          _buildResizeHandle(element: element, alignment: Alignment.topRight, icon: Icons.north_east),
+          _buildResizeHandle(element: element, alignment: Alignment.centerRight, icon: Icons.east),
+          _buildResizeHandle(element: element, alignment: Alignment.bottomRight, icon: Icons.south_east),
+          _buildResizeHandle(element: element, alignment: Alignment.bottomCenter, icon: Icons.south),
+          _buildResizeHandle(element: element, alignment: Alignment.bottomLeft, icon: Icons.south_west),
+          _buildResizeHandle(element: element, alignment: Alignment.centerLeft, icon: Icons.west),
+          _buildRotationHandle(element),
+        ],
+      ],
+    ),
+  );
+}
+
+/// Save element position to database in background
+void _saveElementPositionToDatabase({
+  required String elementId,
+  required PageElement element,
+  required Offset finalPosition,
+}) async {
+  try {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      debugPrint('❌ No bookId for background save');
+      _elementOffsets.remove(elementId);
+      return;
+    }
+
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    await pagesAsync.when(
+      data: (pages) async {
+        final pageIndex = ref.read(currentPageIndexProvider);
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('❌ Invalid page for background save');
+          _elementOffsets.remove(elementId);
+          return;
+        }
+
+        final currentPage = pages[pageIndex];
+        
+        // Save to undo manager
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+
+        // Create updated element
+        final updatedElement = PageElement(
+          id: element.id,
+          type: element.type,
+          position: finalPosition,
+          size: element.size,
+          rotation: element.rotation,
+          properties: element.properties,
+          textStyle: element.textStyle,
+          textAlign: element.textAlign,
+          lineHeight: element.lineHeight,
+          shadows: element.shadows,
+          locked: element.locked,
+        );
+
+        // Write to database
+        final pageActions = ref.read(pageActionsProvider);
+        final success = await pageActions.updateElement(currentPage.id, updatedElement);
+
+        if (success) {
+          debugPrint('✅ Background database write successful');
+          
+          // Invalidate provider to fetch fresh data
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          // Wait for provider to refresh
+          await Future.delayed(const Duration(milliseconds: 300));
+          
+          // Verify provider has new data before clearing cache
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          if (freshPages.isEmpty || pageIndex >= freshPages.length) {
+            debugPrint('⚠️ Fresh pages invalid - keeping cache');
+            return;
+          }
+          
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == elementId,
+            orElse: () => element,
+          );
+          
+          final providerHasNewPosition = (freshElement.position - finalPosition).distance < 2.0;
+          
+          if (providerHasNewPosition) {
+            debugPrint('✅ Provider confirmed new position - clearing cache');
+            if (mounted) {
+              setState(() {
+                _elementOffsets.remove(elementId);
+              });
+            }
+          } else {
+            debugPrint('⚠️ Provider still has old position: ${freshElement.position} vs $finalPosition');
+            debugPrint('⚠️ Keeping cache for 2 more seconds');
+            
+            // Retry clearing cache after delay
+            await Future.delayed(const Duration(seconds: 2));
+            if (mounted && _elementOffsets.containsKey(elementId)) {
+              setState(() {
+                _elementOffsets.remove(elementId);
+              });
+              debugPrint('🧹 Cache cleared after retry delay');
+            }
+          }
+        } else {
+          debugPrint('❌ Background database write failed');
+          _elementOffsets.remove(elementId);
+        }
+      },
+      loading: () {
+        debugPrint('⏳ Pages loading during background save');
+        _elementOffsets.remove(elementId);
+      },
+      error: (error, stack) {
+        debugPrint('❌ Error during background save: $error');
+        _elementOffsets.remove(elementId);
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Exception in background save: $e');
+    if (mounted) {
+      setState(() {
+        _elementOffsets.remove(elementId);
+      });
+    }
+  }
+}
+
+SystemMouseCursor _getResizeCursor(Alignment alignment) {
+  if (alignment == Alignment.topLeft || alignment == Alignment.bottomRight) {
+    return SystemMouseCursors.resizeUpLeftDownRight;
+  } else if (alignment == Alignment.topRight || alignment == Alignment.bottomLeft) {
+    return SystemMouseCursors.resizeUpRightDownLeft;
+  } else if (alignment == Alignment.topCenter || alignment == Alignment.bottomCenter) {
+    return SystemMouseCursors.resizeUpDown;
+  } else if (alignment == Alignment.centerLeft || alignment == Alignment.centerRight) {
+    return SystemMouseCursors.resizeLeftRight;
+  }
+  return SystemMouseCursors.grab;
+}
+
+
+Widget _buildResizeHandle({
+  required PageElement element,
+  required Alignment alignment,
+  required IconData icon,
+}) {
+  double? left, top, right, bottom;
+  const double handleSize = 26;
+  const double handleHitArea = 44;
+  
+  switch (alignment) {
+    case Alignment.topLeft:
+      left = -handleHitArea / 2;
+      top = -handleHitArea / 2;
+      break;
+    case Alignment.topCenter:
+      left = (element.size.width / 2) - (handleHitArea / 2);
+      top = -handleHitArea / 2;
+      break;
+    case Alignment.topRight:
+      right = -handleHitArea / 2;
+      top = -handleHitArea / 2;
+      break;
+    case Alignment.centerRight:
+      right = -handleHitArea / 2;
+      top = (element.size.height / 2) - (handleHitArea / 2);
+      break;
+    case Alignment.bottomRight:
+      right = -handleHitArea / 2;
+      bottom = -handleHitArea / 2;
+      break;
+    case Alignment.bottomCenter:
+      left = (element.size.width / 2) - (handleHitArea / 2);
+      bottom = -handleHitArea / 2;
+      break;
+    case Alignment.bottomLeft:
+      left = -handleHitArea / 2;
+      bottom = -handleHitArea / 2;
+      break;
+    case Alignment.centerLeft:
+      left = -handleHitArea / 2;
+      top = (element.size.height / 2) - (handleHitArea / 2);
+      break;
+  }
+
+  return Positioned(
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    child: MouseRegion(
+      cursor: _getResizeCursor(alignment),
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+            onPanStart: (details) {
+              if (element.locked) {
+                _showSnackBar('Element is locked. Unlock it to resize.');
+                return;
+              }
+              debugPrint('=== RESIZE START ===');
+              debugPrint('Element: ${element.id}');
+              debugPrint('Handle: $alignment');
+              
+              setState(() {
+                _selectedElementId = element.id; 
+                _currentlyResizingId = element.id;
+                
+                // 🚀 Store original state
+                _resizeStartMousePosition = details.globalPosition;
+                _resizeStartElementSize = _elementSizes[element.id] ?? element.size;
+                _resizeStartElementPosition = _elementOffsets[element.id] ?? element.position;
+                
+                _elementSizes[element.id] = _resizeStartElementSize!;
+                _elementOffsets[element.id] = _resizeStartElementPosition!;
+                
+                // Reset frame throttling
+              });
+            },
+
+          onPanUpdate: (details) {
+            if (element.locked) return;
+            if (_resizeStartMousePosition == null || 
+                _resizeStartElementSize == null || 
+                _resizeStartElementPosition == null) {
+              return;
+            }
+
+
+
+            // 🚀 ABSOLUTE RESIZE: Calculate total change from start
+            final totalDelta = details.globalPosition - _resizeStartMousePosition!;
+            
+            // Scale by zoom level
+            final scaledDelta = Offset(
+              totalDelta.dx / _zoomLevel,
+              totalDelta.dy / _zoomLevel,
+            );
+            
+            // Calculate new dimensions based on handle
+            double newWidth = _resizeStartElementSize!.width;
+            double newHeight = _resizeStartElementSize!.height;
+            double newX = _resizeStartElementPosition!.dx;
+            double newY = _resizeStartElementPosition!.dy;
+            
+            // Apply changes based on handle position
+            if (alignment.x == -1) {
+              newWidth = _resizeStartElementSize!.width - scaledDelta.dx;
+              newX = _resizeStartElementPosition!.dx + scaledDelta.dx;
+            } else if (alignment.x == 1) {
+              newWidth = _resizeStartElementSize!.width + scaledDelta.dx;
+            }
+            
+            if (alignment.y == -1) {
+              newHeight = _resizeStartElementSize!.height - scaledDelta.dy;
+              newY = _resizeStartElementPosition!.dy + scaledDelta.dy;
+            } else if (alignment.y == 1) {
+              newHeight = _resizeStartElementSize!.height + scaledDelta.dy;
+            }
+            
+            // Minimum sizes
+            double minWidth = 30;
+            double minHeight = 30;
+
+            if (element.type == ElementType.audio) {
+              minWidth = 280;
+              minHeight = 90;
+            } else if (element.type == ElementType.video) {
+              minWidth = 200;
+              minHeight = 150;
+            }
+
+            if (newWidth < minWidth) {
+              newWidth = minWidth;
+              if (alignment.x == -1) {
+                newX = _resizeStartElementPosition!.dx + (_resizeStartElementSize!.width - minWidth);
+              }
+            }
+            if (newHeight < minHeight) {
+              newHeight = minHeight;
+              if (alignment.y == -1) {
+                newY = _resizeStartElementPosition!.dy + (_resizeStartElementSize!.height - minHeight);
+              }
+            }
+            
+            const double maxWidth = 20000;
+            const double maxHeight = 20000;
+            if (newWidth > maxWidth) newWidth = maxWidth;
+            if (newHeight > maxHeight) newHeight = maxHeight;
+            
+            // 🚀 Single update
+            _elementSizes[element.id] = Size(newWidth, newHeight);
+            _elementOffsets[element.id] = Offset(newX, newY);
+            setState(() {});
+          },
+
+          onPanEnd: (details) {
+            debugPrint('=== RESIZE END ===');
+            _clearResizeStateOptimized(element.id);
+          },
+
+          onPanCancel: () {
+            debugPrint('=== RESIZE CANCEL ===');
+            _clearResizeStateOptimized(element.id);
+          },
+          child: Container(
+            width: handleHitArea,
+            height: handleHitArea,
+            alignment: Alignment.center,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: handleSize,
+              height: handleSize,
+              decoration: BoxDecoration(
+                color: _currentlyResizingId == element.id ? Colors.orange : Colors.blue,
+                shape: alignment.x != 0 && alignment.y != 0 
+                    ? BoxShape.circle 
+                    : BoxShape.rectangle,
+                border: Border.all(
+                  color: Colors.white, 
+                  width: _currentlyResizingId == element.id ? 3 : 2
+                ),
+                borderRadius: alignment.x == 0 || alignment.y == 0 
+                    ? BorderRadius.circular(6) 
+                    : null,
+                boxShadow: [
+                  BoxShadow(
+                    color: _currentlyResizingId == element.id 
+                        ? Colors.orange.withValues(alpha: 0.5)
+                        : Colors.black.withValues(alpha: 0.3),
+                    blurRadius: _currentlyResizingId == element.id ? 12 : 4,
+                    offset: const Offset(0, 2),
+                  ),
                 ],
-              ],
+              ),
+              child: Icon(
+                icon,
+                size: 14,
+                color: Colors.white,
+              ),
             ),
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildRotationHandle(PageElement element) {
-    return Positioned(
-      top: -40,
-      left: (element.size.width / 2) - 15,
-      child: GestureDetector(
-        onPanStart: (details) {
-          setState(() {
-            _currentlyRotatingId = element.id;
-            _elementRotations[element.id] = element.rotation;
-          });
-        },
-        onPanUpdate: (details) {
-          final center = Offset(
-            element.position.dx + element.size.width / 2,
-            element.position.dy + element.size.height / 2,
-          );
-          
-          final angle = math.atan2(
-            details.globalPosition.dy - center.dy,
-            details.globalPosition.dx - center.dx,
-          );
-          
-          setState(() {
-            _elementRotations[element.id] = angle;
-          });
-        },
-        onPanEnd: (details) async {
-          final finalRotation = _elementRotations[element.id] ?? element.rotation;
-          
-          setState(() {
-            _currentlyRotatingId = null;
-          });
-
-          if (finalRotation != element.rotation) {
-            await _updateElementRotation(element.id, finalRotation);
-          } else {
-            setState(() {
-              _elementRotations.remove(element.id);
-            });
-          }
-        },
-        child: Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            color: Colors.blue,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: const Icon(
-            Icons.refresh,
-            size: 16,
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildResizeHandle({
-    required PageElement element,
-    required Alignment alignment,
-    required IconData icon,
-  }) {
-    double? left, top, right, bottom;
-    const double handleSize = 20;
-    const double handleHitArea = 32;
-    
-    switch (alignment) {
-      case Alignment.topLeft:
-        left = -handleHitArea / 2;
-        top = -handleHitArea / 2;
-        break;
-      case Alignment.topCenter:
-        left = (element.size.width / 2) - (handleHitArea / 2);
-        top = -handleHitArea / 2;
-        break;
-      case Alignment.topRight:
-        right = -handleHitArea / 2;
-        top = -handleHitArea / 2;
-        break;
-      case Alignment.centerRight:
-        right = -handleHitArea / 2;
-        top = (element.size.height / 2) - (handleHitArea / 2);
-        break;
-      case Alignment.bottomRight:
-        right = -handleHitArea / 2;
-        bottom = -handleHitArea / 2;
-        break;
-      case Alignment.bottomCenter:
-        left = (element.size.width / 2) - (handleHitArea / 2);
-        bottom = -handleHitArea / 2;
-        break;
-      case Alignment.bottomLeft:
-        left = -handleHitArea / 2;
-        bottom = -handleHitArea / 2;
-        break;
-      case Alignment.centerLeft:
-        left = -handleHitArea / 2;
-        top = (element.size.height / 2) - (handleHitArea / 2);
-        break;
-    }
-
-    return Positioned(
-      left: left,
-      top: top,
-      right: right,
-      bottom: bottom,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanStart: (details) {
-          debugPrint('=== RESIZE START ===');
-          debugPrint('Element: ${element.id}');
-          debugPrint('Handle: $alignment');
-          
-          setState(() {
-            _currentlyResizingId = element.id;
-            _elementSizes[element.id] = element.size;
-            _elementOffsets[element.id] = element.position;
-          });
-        },
-        onPanUpdate: (details) {
-          final currentResizeSize = _elementSizes[element.id] ?? element.size;
-          final currentResizePosition = _elementOffsets[element.id] ?? element.position;
-          
-          double newWidth = currentResizeSize.width;
-          double newHeight = currentResizeSize.height;
-          double newX = currentResizePosition.dx;
-          double newY = currentResizePosition.dy;
-          
-          if (alignment.x == -1) {
-            newWidth = currentResizeSize.width - details.delta.dx;
-            newX = currentResizePosition.dx + details.delta.dx;
-          } else if (alignment.x == 1) {
-            newWidth = currentResizeSize.width + details.delta.dx;
-          }
-          
-          if (alignment.y == -1) {
-            newHeight = currentResizeSize.height - details.delta.dy;
-            newY = currentResizePosition.dy + details.delta.dy;
-          } else if (alignment.y == 1) {
-            newHeight = currentResizeSize.height + details.delta.dy;
-          }
-          
-// Minimum sizes based on element type
-double minWidth = 20;
-double minHeight = 20;
-
-if (element.type == ElementType.audio) {
-  minWidth = 280;  // Audio needs space for controls
-  minHeight = 90;  // Audio needs vertical space
-} else if (element.type == ElementType.video) {
-  minWidth = 200;
-  minHeight = 150;
+    ),
+  );
 }
 
-if (newWidth < minWidth) newWidth = minWidth;
-if (newHeight < minHeight) newHeight = minHeight;
-          
-          const double maxWidth = 20000;
-          const double maxHeight = 20000;
-          if (newWidth > maxWidth) newWidth = maxWidth;
-          if (newHeight > maxHeight) newHeight = maxHeight;
-          
-          setState(() {
-            _elementSizes[element.id] = Size(newWidth, newHeight);
-            _elementOffsets[element.id] = Offset(newX, newY);
-          });
-        },
-        onPanEnd: (details) {
-          debugPrint('=== RESIZE END ===');
-          _clearResizeState(element.id);
-        },
-        onPanCancel: () {
-          debugPrint('=== RESIZE CANCEL ===');
-          _clearResizeState(element.id);
-        },
-        child: Container(
-          width: handleHitArea,
-          height: handleHitArea,
-          alignment: Alignment.center,
-          child: Container(
-            width: handleSize,
-            height: handleSize,
+
+
+Widget _buildRotationHandle(PageElement element) {
+  return Positioned(
+    top: -50,
+    left: (element.size.width / 2) - 18,
+    child: MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {},
+          onPanStart: (details) {
+            if (element.locked) {
+              _showSnackBar('Element is locked. Unlock it to rotate.');
+              return;
+            }
+            setState(() {
+              _selectedElementId = element.id;
+              _currentlyRotatingId = element.id;
+              _elementRotations[element.id] = element.rotation;
+            });
+          },
+          onPanUpdate: (details) {
+            if (element.locked) return;
+
+
+            final center = Offset(
+              element.position.dx + element.size.width / 2,
+              element.position.dy + element.size.height / 2,
+            );
+            
+            final angle = math.atan2(
+              details.globalPosition.dy - center.dy,
+              details.globalPosition.dx - center.dx,
+            );
+            
+            _elementRotations[element.id] = angle;
+            setState(() {});
+          },
+          onPanEnd: (details) async {
+            final finalRotation = _elementRotations[element.id] ?? element.rotation;
+            
+            setState(() => _currentlyRotatingId = null);
+
+            if (finalRotation != element.rotation) {
+              await _updateElementRotation(element.id, finalRotation);
+            } else {
+              setState(() => _elementRotations.remove(element.id));
+            }
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
-              color: Colors.blue,
-              shape: alignment.x != 0 && alignment.y != 0 
-                  ? BoxShape.circle 
-                  : BoxShape.rectangle,
-              border: Border.all(color: Colors.white, width: 2),
-              borderRadius: alignment.x == 0 || alignment.y == 0 
-                  ? BorderRadius.circular(4) 
-                  : null,
+              color: _currentlyRotatingId == element.id ? Colors.green : Colors.blue,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: Colors.white, 
+                width: _currentlyRotatingId == element.id ? 3 : 2
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.3),
-                  blurRadius: 4,
+                  color: _currentlyRotatingId == element.id
+                      ? Colors.green.withValues(alpha: 0.5)
+                      : Colors.black.withValues(alpha: 0.3),
+                  blurRadius: _currentlyRotatingId == element.id ? 12 : 4,
                   offset: const Offset(0, 2),
                 ),
               ],
             ),
-            child: Icon(
-              icon,
-              size: 12,
-              color: Colors.white,
-            ),
+            child: _currentlyRotatingId == element.id
+                ? const Icon(Icons.rotate_right, size: 20, color: Colors.white)
+                : const Icon(Icons.refresh, size: 18, color: Colors.white),
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildElementContent(PageElement element) {
-    switch (element.type) {
-      case ElementType.text:
-        return Container(
-          padding: const EdgeInsets.all(8),
-          alignment: _getAlignment(element.textAlign ?? TextAlign.left),
-          child: Text(
-            element.properties['text'] ?? '',
-            style: (element.textStyle ?? const TextStyle(fontSize: 18, color: Colors.black))
-                .copyWith(
-                  height: element.lineHeight,
-                  shadows: element.shadows,
-                ),
-            textAlign: element.textAlign ?? TextAlign.left,
-          ),
-        );
-      
-      case ElementType.image:
-        return Image.network(
-          element.properties['imageUrl'] ?? '',
-          fit: BoxFit.contain,
-          loadingBuilder: (context, child, loadingProgress) {
-            if (loadingProgress == null) return child;
-            return Center(
-              child: CircularProgressIndicator(
-                value: loadingProgress.expectedTotalBytes != null
-                    ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
-                    : null,
-              ),
-            );
-          },
-          errorBuilder: (context, error, stackTrace) {
-            return Container(
-              color: Colors.grey.shade300,
-              child: const Center(
-                child: Icon(Icons.broken_image, size: 48),
-              ),
-            );
-          },
-        );
-      
-      case ElementType.shape:
-        return CustomPaint(
-          painter: ShapePainter(
-            shapeType: _parseShapeType(element.properties['shapeType']),
-            color: _parseColor(element.properties['color']),
-            strokeWidth: (element.properties['strokeWidth'] ?? 2.0).toDouble(),
-            filled: element.properties['filled'] ?? true,
-          ),
-          child: const SizedBox.expand(),
-        );
-
-case ElementType.audio:
-  return AudioPlayerWidget(
-    audioUrl: element.properties['audioUrl'] ?? '',
-    title: element.properties['title'],
-    backgroundColor: const Color(0xFF2C3E50),
-    accentColor: const Color(0xFF3498DB),
-  );
-
-case ElementType.video:
-  return Container(
-    decoration: BoxDecoration(
-      color: Colors.black,
-      borderRadius: BorderRadius.circular(8),
-      border: Border.all(color: Colors.grey, width: 2),
     ),
-    child: Stack(
-      children: [
-        // Video thumbnail or placeholder
-        if (element.properties['thumbnailUrl'] != null)
-          Image.network(
-            element.properties['thumbnailUrl'],
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: double.infinity,
-          )
-        else
-          const Center(
-            child: Icon(Icons.videocam, size: 64, color: Colors.white70),
+  );
+}
+
+Widget _buildElementContent(PageElement element, {bool allowInteraction = true}) {
+  // ✅ USE CACHED ELEMENT IF AVAILABLE for instant visual updates
+  final displayElement = _localElementCache[element.id] ?? element;
+  
+  if (_localElementCache[element.id] != null) {
+     debugPrint('🎯 [Canvas] USING CACHED ELEMENT: ${element.id}');
+    debugPrint('   Cache fontSize: ${displayElement.textStyle?.fontSize}');
+  }
+  
+  switch (displayElement.type) {
+    case ElementType.text:
+      return Container(
+        padding: const EdgeInsets.all(8),
+        alignment: _getAlignment(displayElement.textAlign ?? TextAlign.left),
+        child: Text(
+          displayElement.properties['text'] ?? '',
+          style: (displayElement.textStyle ?? const TextStyle(fontSize: 18, color: Colors.black))
+              .copyWith(
+                height: displayElement.lineHeight,
+                shadows: displayElement.shadows,
+              ),
+          textAlign: displayElement.textAlign ?? TextAlign.left,
+        ),
+      );
+    
+    case ElementType.image:
+      return Image.network(
+        displayElement.properties['imageUrl'] ?? '',
+        fit: BoxFit.contain,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return Center(
+            child: CircularProgressIndicator(
+              value: loadingProgress.expectedTotalBytes != null
+                  ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                  : null,
+            ),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            color: Colors.grey.shade300,
+            child: const Center(
+              child: Icon(Icons.broken_image, size: 48),
+            ),
+          );
+        },
+      );
+    
+    case ElementType.shape:
+      return CustomPaint(
+        painter: ShapePainter(
+          shapeType: _parseShapeType(displayElement.properties['shapeType']),
+          color: _parseColor(displayElement.properties['color']),
+          strokeWidth: (displayElement.properties['strokeWidth'] ?? 2.0).toDouble(),
+          filled: displayElement.properties['filled'] ?? true,
+        ),
+        child: const SizedBox.expand(),
+      );
+
+    case ElementType.audio:
+      return AbsorbPointer(
+        absorbing: !allowInteraction,
+        child: AudioPlayerWidget(
+          audioUrl: displayElement.properties['audioUrl'] ?? '',
+          title: displayElement.properties['title'],
+          backgroundColor: const Color(0xFF2C3E50),
+          accentColor: const Color(0xFF3498DB),
+        ),
+      );
+
+    case ElementType.video:
+      // ✅ ADD DEBUG LOGGING
+      debugPrint('🎬 === VIDEO ELEMENT DEBUG ===');
+      debugPrint('Element ID: ${displayElement.id}');
+      debugPrint('All Properties: ${displayElement.properties}');
+      debugPrint('Video URL: ${displayElement.properties['videoUrl']}');
+      debugPrint('Thumbnail URL: ${displayElement.properties['thumbnailUrl']}');
+      
+      return AbsorbPointer(
+        absorbing: !allowInteraction,
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey, width: 2),
           ),
-        
-        // Play button overlay
-        Center(
-          child: Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.6),
-              shape: BoxShape.circle,
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.play_arrow, size: 40, color: Colors.white),
-              onPressed: () {
-                // Show video player dialog
-                final videoUrl = element.properties['videoUrl'];
-                if (videoUrl != null) {
-                  _showVideoPlayer(videoUrl);
-                }
-              },
-            ),
+          child: Stack(
+            children: [
+              // Video thumbnail or placeholder
+              if (displayElement.properties['thumbnailUrl'] != null)
+                Image.network(
+                  displayElement.properties['thumbnailUrl'],
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                )
+              else
+                const Center(
+                  child: Icon(Icons.videocam, size: 64, color: Colors.white70),
+                ),
+              
+              // Play button overlay
+              Center(
+                child: GestureDetector(
+                  onTap: allowInteraction ? () {
+                    debugPrint('🎬 VIDEO PLAY BUTTON TAPPED!');
+                    debugPrint('Allow Interaction: $allowInteraction');
+                    final videoUrl = displayElement.properties['videoUrl'];
+                    debugPrint('Video URL from properties: $videoUrl');
+                    
+                    if (videoUrl != null && videoUrl.toString().isNotEmpty) {
+                      debugPrint('✅ Opening video player with URL: $videoUrl');
+                      _showVideoPlayer(videoUrl.toString());
+                    } else {
+                      debugPrint('❌ No video URL found!');
+                      _showSnackBar('Video URL is missing. Please re-upload the video.');
+                    }
+                  } : null,
+                  child: Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow, 
+                      size: 40, 
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ],
-    ),
-  );
+      );
 
-      default:
-        return const SizedBox();
-    }
+    default:
+      return const SizedBox();
   }
+}
 
 
 void _showVideoPlayer(String videoUrl) {
@@ -1991,6 +3754,46 @@ void _showVideoPlayer(String videoUrl) {
       },
       loading: () {},
       error: (_, _) {},
+    );
+  }
+
+   Future<void> _handlePreview() async {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      _showSnackBar('No book loaded');
+      return;
+    }
+
+    // Optional: Auto-save before previewing
+    setState(() => _isSaving = true);
+    await _saveCurrentPage();
+    setState(() => _isSaving = false);
+
+    if (!mounted) return;
+
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(color: Colors.orange),
+      ),
+    );
+
+    // Small delay to ensure data is saved
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (!mounted) return;
+
+    // Close loading dialog
+    Navigator.pop(context);
+
+    // Navigate to preview
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => BookViewPage(bookId: bookId),
+      ),
     );
   }
 }
@@ -2139,5 +3942,70 @@ class ShapePainter extends CustomPainter {
         oldDelegate.color != color ||
         oldDelegate.strokeWidth != strokeWidth ||
         oldDelegate.filled != filled;
+  }
+}
+
+
+// Custom Scrollable Context Menu
+class ScrollableContextMenu extends StatelessWidget {
+  final PageElement element;
+  final Function(String) onSelected;
+
+  const ScrollableContextMenu({
+    super.key,
+    required this.element,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: EdgeInsets.zero,
+      child: GestureDetector(
+        onTap: () => Navigator.pop(context),
+        child: Container(
+          color: Colors.transparent,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: () => Navigator.pop(context),
+                  child: Container(color: Colors.transparent),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectionBorder extends StatelessWidget {
+  final bool isSelected;
+  final bool isLocked;
+  final Widget child;
+
+  const _SelectionBorder({
+    required this.isSelected,
+    required this.isLocked,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        border: isSelected
+            ? Border.all(
+                color: isLocked ? Colors.orange : Colors.blue,
+                width: 2,
+              )
+            : Border.all(color: Colors.transparent, width: 2),
+      ),
+      child: child,
+    );
   }
 }

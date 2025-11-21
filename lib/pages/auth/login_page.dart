@@ -1,7 +1,8 @@
+// lib/pages/auth/login_page.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'signup_page.dart';
-import '../../services/auth_service.dart';
+import '../../providers/auth_providers.dart';
 import '../../utils/role_redirect.dart';
 
 // ===== START DASHBOARD QUICK ACCESS =====
@@ -11,17 +12,16 @@ import '../dashboard/teacher_dashboard.dart';
 import '../dashboard/student_dashboard.dart';
 // ===== END DASHBOARD QUICK ACCESS =====
 
-class LoginPage extends StatefulWidget {
+class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
 
   @override
-  State<LoginPage> createState() => _LoginPageState();
+  ConsumerState<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends ConsumerState<LoginPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  final AuthService _authService = AuthService();
   
   bool _obscurePassword = true;
   bool _isHoveringEmail = false;
@@ -51,56 +51,57 @@ class _LoginPageState extends State<LoginPage> {
   }
   // ===== END DASHBOARD QUICK ACCESS =====
 
- Future<void> _handleLogin() async {
-  if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
-    _showSnackBar('Please fill in all fields');
-    return;
-  }
+  Future<void> _handleLogin() async {
+    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+      _showSnackBar('Please fill in all fields');
+      return;
+    }
 
-  setState(() => _isLoading = true);
+    setState(() => _isLoading = true);
 
-  try {
-    final result = await _authService.signIn(
-      email: _emailController.text.trim(),
-      password: _passwordController.text.trim(),
-    );
-
-    if (!mounted) return;
-
-    if (result.success && result.role != null) {
-      _showSnackBar('Login successful! Redirecting...');
-      
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (!mounted) return;
-      
-      // Navigate with fresh ProviderScope to force provider refresh
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (context) {
-            return ProviderScope(
-              child: RoleRedirect.getDashboardForRole(result.role),
-            );
-          },
-        ),
+    try {
+      final authService = ref.read(authServiceProvider);
+      final result = await authService.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
       );
-    } else {
-      _showSnackBar(result.error ?? 'Login failed');
-      
-      // Show option to resend confirmation email if needed
-      if (result.needsEmailConfirmation) {
-        _showResendConfirmationDialog();
+
+      if (!mounted) return;
+
+      if (result.success && result.role != null) {
+        _showSnackBar('Login successful! Redirecting...');
+        
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
+        
+        // Navigate with fresh ProviderScope to force provider refresh
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) {
+              return ProviderScope(
+                child: RoleRedirect.getDashboardForRole(result.role),
+              );
+            },
+          ),
+        );
+      } else {
+        _showSnackBar(result.error ?? 'Login failed');
+        
+        // Show option to resend confirmation email if needed
+        if (result.needsEmailConfirmation) {
+          _showResendConfirmationDialog();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar('An error occurred. Please try again.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
       }
     }
-  } catch (e) {
-    if (mounted) {
-      _showSnackBar('An error occurred. Please try again.');
-    }
-  } finally {
-    if (mounted) {
-      setState(() => _isLoading = false);
-    }
   }
-}
 
   void _showResendConfirmationDialog() {
     showDialog(
@@ -118,7 +119,8 @@ class _LoginPageState extends State<LoginPage> {
           ElevatedButton(
             onPressed: () async {
               Navigator.of(context).pop();
-              final success = await _authService.resendConfirmationEmail(
+              final authService = ref.read(authServiceProvider);
+              final success = await authService.resendConfirmationEmail(
                 _emailController.text.trim(),
               );
               if (mounted) {
@@ -218,7 +220,7 @@ class _LoginPageState extends State<LoginPage> {
                                     height: 210,
                                     fit: BoxFit.cover,
                                     errorBuilder: (context, error, stackTrace) {
-                                      return Icon(
+                                      return const Icon(
                                         Icons.business_center,
                                         size: 48,
                                         color: Colors.white,
@@ -299,14 +301,14 @@ class _LoginPageState extends State<LoginPage> {
                         
                         const SizedBox(height: 24),
                         RichText(
-                          text: TextSpan(
-                            style: const TextStyle(
+                          text: const TextSpan(
+                            style: TextStyle(
                               fontFamily: 'Poppins',
                               fontSize: 32,
                               fontWeight: FontWeight.bold,
                               letterSpacing: -0.5,
                             ),
-                            children: const [
+                            children: [
                               TextSpan(
                                 text: 'CORNER',
                                 style: TextStyle(color: Colors.white),
@@ -356,7 +358,7 @@ class _LoginPageState extends State<LoginPage> {
                               style: const TextStyle(fontSize: 16),
                               decoration: InputDecoration(
                                 hintText: 'Email',
-                                hintStyle: TextStyle(color: const Color.fromARGB(255, 118, 110, 110)),
+                                hintStyle: const TextStyle(color: Color.fromARGB(255, 118, 110, 110)),
                                 filled: true,
                                 fillColor: Colors.white.withValues(alpha: 0.8),
                                 border: OutlineInputBorder(
@@ -414,7 +416,7 @@ class _LoginPageState extends State<LoginPage> {
                               style: const TextStyle(fontSize: 16),
                               decoration: InputDecoration(
                                 hintText: 'Password',
-                                hintStyle: TextStyle(color: const Color.fromARGB(255, 118, 110, 110)),
+                                hintStyle: const TextStyle(color: Color.fromARGB(255, 118, 110, 110)),
                                 filled: true,
                                 fillColor: Colors.white.withValues(alpha: 0.8),
                                 border: OutlineInputBorder(

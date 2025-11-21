@@ -1,18 +1,18 @@
 // lib/pages/about_us_page.dart
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:provider/provider.dart';
 import '../app_theme.dart';
-import '../services/language_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../main.dart';
 
-class AboutUsPage extends StatelessWidget {
+class AboutUsPage extends ConsumerWidget {
   final bool isDarkMode;
 
   const AboutUsPage({super.key, required this.isDarkMode});
 
   @override
-  Widget build(BuildContext context) {
-    final languageService = Provider.of<LanguageService>(context);
+Widget build(BuildContext context, WidgetRef ref) {
+  final languageService = ref.watch(languageServiceProvider);
     final backgroundColor = isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite;
     final cardColor = isDarkMode ? AppTheme.dark_grey : AppTheme.white;
     final textColor = isDarkMode ? AppTheme.white : AppTheme.darkerText;

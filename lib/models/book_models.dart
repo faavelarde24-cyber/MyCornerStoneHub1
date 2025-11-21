@@ -1,5 +1,6 @@
 // lib/models/book_models.dart
 import 'package:flutter/material.dart';
+import 'book_size_type.dart';
 
 class Book {
   final String id;
@@ -126,13 +127,27 @@ class BookPage {
     required this.updatedAt,
   });
 
-  factory BookPage.fromJson(Map<String, dynamic> json) {
+factory BookPage.fromJson(Map<String, dynamic> json) {
+    debugPrint('🔍 BookPage.fromJson parsing: ${json['PageId']}');
+    
     return BookPage(
       id: json['PageId']?.toString() ?? '',
-      bookId: json['BookId']?.toString() ?? '',
+      bookId: json['BookId']?.toString() ?? '0', // ✅ CHANGED: Default to '0' instead of ''
       pageNumber: (json['PageNumber'] ?? 1) as int,
-      elements: (json['Elements'] as List? ?? []).map((e) => PageElement.fromJson(e)).toList(),
-      background: PageBackground.fromJson(json['Background'] ?? {'color': '#FFFFFF'}),
+      elements: (json['Elements'] as List? ?? [])
+          .map((e) {
+            try {
+              return PageElement.fromJson(e);
+            } catch (error) {
+              debugPrint('⚠️ Error parsing element: $error');
+              return null;
+            }
+          })
+          .whereType<PageElement>() // Filter out nulls
+          .toList(),
+      background: json['Background'] != null 
+          ? PageBackground.fromJson(json['Background']) 
+          : PageBackground(color: const Color(0xFFFFFFFF)),
       layout: json['Layout'] != null ? PageLayout.fromJson(json['Layout']) : null,
       pageSize: json['PageSize'] != null ? PageSize.fromJson(json['PageSize']) : null,
       template: json['Template']?.toString(),
@@ -166,6 +181,7 @@ class PageElement {
   final TextAlign? textAlign;
   final double? lineHeight;
   final List<Shadow>? shadows;
+  final bool locked;
 
   PageElement({
     required this.id,
@@ -178,6 +194,7 @@ class PageElement {
     this.textAlign,
     this.lineHeight,
     this.shadows,
+    this.locked = false,
   });
 
  factory PageElement.shape({
@@ -200,6 +217,7 @@ class PageElement {
         'strokeWidth': strokeWidth,
         'filled': filled,
       },
+      locked: false,
     );
   }
 
@@ -223,6 +241,7 @@ class PageElement {
       textAlign: textAlign,
       lineHeight: lineHeight,
       shadows: shadows,
+      locked: false,
     );
   }
 
@@ -238,6 +257,7 @@ class PageElement {
       position: position,
       size: size,
       properties: {'imageUrl': imageUrl},
+      locked: false,
     );
   }
 
@@ -262,6 +282,7 @@ class PageElement {
       textAlign: json['textAlign'] != null ? _textAlignFromString(json['textAlign']) : null,
       lineHeight: json['lineHeight']?.toDouble(),
       shadows: json['shadows'] != null ? _shadowsFromJson(json['shadows']) : null,
+      locked: json['locked'] ?? false,
     );
   }
 
@@ -281,6 +302,7 @@ factory PageElement.audio({
       'audioUrl': audioUrl,
       'title': title ?? 'Audio',
     },
+    locked: false,
   );
 }
 
@@ -300,6 +322,7 @@ factory PageElement.video({
       'videoUrl': videoUrl,
       'thumbnailUrl': thumbnailUrl,
     },
+    locked: false,
   );
 }
 
@@ -315,6 +338,7 @@ factory PageElement.video({
       'textAlign': textAlign?.name,
       'lineHeight': lineHeight,
       'shadows': shadows != null ? _shadowsToJson(shadows!) : null,
+      'locked': locked,
     };
   }
 
@@ -436,6 +460,15 @@ class PageSize {
 
   PageSize({required this.width, required this.height, this.orientation = 'portrait'});
 
+  factory PageSize.fromBookSizeType(BookSizeType sizeType) {
+    return PageSize(
+      width: sizeType.width,
+      height: sizeType.height,
+      orientation: sizeType.name,
+    );
+  }
+
+
   factory PageSize.fromJson(Map<String, dynamic> json) {
     return PageSize(
       width: (json['width'] ?? 800).toDouble(),
@@ -443,6 +476,8 @@ class PageSize {
       orientation: json['orientation'] ?? 'portrait',
     );
   }
+
+  
 
   Map<String, dynamic> toJson() {
     return {

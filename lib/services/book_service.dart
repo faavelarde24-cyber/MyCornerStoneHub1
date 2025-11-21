@@ -3,19 +3,21 @@ import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/book_models.dart';
 import 'supabase_service.dart';
+import '../models/book_size_type.dart';
 
 class BookService {
   final SupabaseClient _client = SupabaseService.client;
   final Logger _logger = Logger();
 
   /// Create a new book
-  Future<Book?> createBook({
-    required String title,
-    String? description,
-    String? coverImageUrl,
-    PageSize? pageSize,
-    BookTheme? theme,
-  }) async {
+Future<Book?> createBook({
+  required String title,
+  String? description,
+  String? coverImageUrl,
+  PageSize? pageSize,
+  BookTheme? theme,
+  BookSizeType? sizeType,
+}) async {
     try {
       final userId = _client.auth.currentUser?.id;
       if (userId == null) {
@@ -43,7 +45,9 @@ class BookService {
         'CoverImageUrl': coverImageUrl,
         'CreatorId': usersId,
         'Status': 'Draft', // CHANGED: Capitalized to match DB constraint
-        'PageSize': (pageSize ?? PageSize(width: 800, height: 600)).toJson(),
+        'PageSize': (pageSize ?? (sizeType != null 
+        ? PageSize(width: sizeType.width, height: sizeType.height, orientation: sizeType.name)
+        : PageSize(width: 800, height: 600))).toJson(),
         'Theme': theme?.toJson(),
         'Settings': BookSettings().toJson(),
         'PageCount': 0,

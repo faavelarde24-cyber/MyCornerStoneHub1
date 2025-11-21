@@ -1,16 +1,13 @@
 // lib/providers/book_search_providers.dart
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:logger/logger.dart';
-import '../models/search_models.dart';
-import '../services/book_search_service.dart';
-import '../services/internet_book_search_service.dart'; // NEW
+import '../services/book_search_service.dart'; // NEW
+import '../models/book_search_models.dart';
 
 final _logger = Logger();
 
 // NEW: Internet Book Search Service Provider
-final internetBookSearchServiceProvider = Provider<InternetBookSearchService>((ref) {
-  return InternetBookSearchService();
-});
+
 
 // Service Provider (existing database search)
 final bookSearchServiceProvider = Provider<BookSearchService>((ref) {
@@ -30,30 +27,7 @@ final searchQueryProvider = NotifierProvider<SearchQueryNotifier, String>(
   () => SearchQueryNotifier(),
 );
 
-// NEW: Internet Book Search Results Provider
-final internetSearchResultsProvider = FutureProvider.autoDispose
-    .family<List<InternetBook>, String>((ref, query) async {
-  if (query.isEmpty || query.length < 2) return [];
-  
-  final searchService = ref.read(internetBookSearchServiceProvider);
-  return await searchService.searchAll(query);
-});
 
-// NEW: Internet Book Search Suggestions Provider
-final internetSearchSuggestionsProvider = FutureProvider.autoDispose
-    .family<List<String>, String>((ref, query) async {
-  if (query.isEmpty || query.length < 2) return [];
-  
-  final searchService = ref.read(internetBookSearchServiceProvider);
-  return await searchService.getAutocompleteSuggestions(query);
-});
-
-// NEW: Book Details Provider
-final internetBookDetailsProvider = FutureProvider.autoDispose
-    .family<InternetBookDetails?, String>((ref, bookId) async {
-  final searchService = ref.read(internetBookSearchServiceProvider);
-  return await searchService.getGoogleBookDetails(bookId);
-});
 
 // Keep existing providers for database search...
 final searchResultsProvider = FutureProvider.autoDispose<List<BookSearchResult>>((ref) async {
@@ -65,16 +39,7 @@ final searchResultsProvider = FutureProvider.autoDispose<List<BookSearchResult>>
 });
 
 // ... rest of existing providers remain the same
-final filteredSearchResultsProvider = FutureProvider.autoDispose
-    .family<List<BookSearchResult>, SearchFilter>((ref, filter) async {
-  final searchService = ref.read(bookSearchServiceProvider);
-  
-  return await searchService.searchBooks(
-    query: filter.query,
-    author: filter.author,
-    minRating: filter.minRating,
-  );
-});
+
 
 final searchSuggestionsProvider = FutureProvider.autoDispose
     .family<List<String>, String>((ref, query) async {

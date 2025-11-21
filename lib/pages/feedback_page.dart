@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../app_theme.dart';
 import '../models/app_theme_mode.dart';
 import '../services/language_service.dart';
-import 'package:provider/provider.dart' as provider;
+import '../main.dart';
 
 class FeedbackPage extends ConsumerStatefulWidget {
   final AppThemeMode themeMode;
@@ -276,7 +276,7 @@ final List<String> _categories = [
 
   @override
   Widget build(BuildContext context) {
-    final languageService = provider.Provider.of<LanguageService>(context);
+    final languageService = ref.watch(languageServiceProvider);
     final backgroundColor = _getBackgroundColor();
     final textColor = _getTextColor();
     final subtitleColor = _getSubtitleColor();

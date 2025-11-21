@@ -1,7 +1,8 @@
 // lib/services/book_search_service.dart
 import 'package:logger/logger.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../models/search_models.dart';
+import '../models/book_search_models.dart';
+
 import 'supabase_service.dart';
 
 class BookSearchService {

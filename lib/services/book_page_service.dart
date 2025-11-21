@@ -10,68 +10,169 @@ class BookPageService {
   final Logger _logger = Logger();
 
   /// Create a new page
-  Future<BookPage?> createPage({
+Future<BookPage?> createPage({
     required String bookId,
     required int pageNumber,
     List<PageElement>? elements,
     PageBackground? background,
+    PageSize? pageSize,
   }) async {
+    debugPrint('🟢 === BookPageService.createPage START ===');
+    debugPrint('Book ID: $bookId');
+    debugPrint('Page Number: $pageNumber');
+    debugPrint('Page Size provided: ${pageSize != null ? "${pageSize.width}x${pageSize.height}" : "null"}');
+    
     try {
       final userId = _client.auth.currentUser?.id;
       if (userId == null) {
+        debugPrint('❌ No authenticated user found');
         _logger.e('No authenticated user found');
         return null;
       }
+
+      debugPrint('✅ User ID: $userId');
 
       final pageData = {
         'BookId': int.parse(bookId),
         'PageNumber': pageNumber,
         'Elements': elements?.map((e) => e.toJson()).toList() ?? [],
         'Background': (background ?? PageBackground(color: const Color(0xFFFFFFFF))).toJson(),
+        'PageSize': pageSize?.toJson(),
         'LastUpdateUser': userId.toString(),
         'UserCreated': userId.toString(),
       };
 
+      debugPrint('📦 Page data prepared:');
+      debugPrint('   BookId: ${pageData['BookId']}');
+      debugPrint('   PageNumber: ${pageData['PageNumber']}');
+      debugPrint('   Elements count: ${(pageData['Elements'] as List).length}');
+      debugPrint('   Background: ${pageData['Background']}');
+      debugPrint('   PageSize: ${pageData['PageSize']}');
+
+      debugPrint('💾 Inserting page into database...');
+      
       final response = await _client
           .from('BookPages')
           .insert(pageData)
           .select()
           .single();
 
+      debugPrint('✅ Database response received');
+      debugPrint('   PageId: ${response['PageId']}');
+      
       _logger.i('Page created successfully: ${response['PageId']}');
-      return BookPage.fromJson(response);
+      
+      final bookPage = BookPage.fromJson(response);
+      
+      debugPrint('✅ Page parsed successfully');
+      debugPrint('🟢 === BookPageService.createPage END ===');
+      
+      return bookPage;
     } on PostgrestException catch (e, stack) {
+      debugPrint('❌ Supabase error creating page: ${e.message}');
+      debugPrint('   Details: ${e.details}');
+      debugPrint('   Hint: ${e.hint}');
+      debugPrint('   Code: ${e.code}');
       _logger.e('Supabase error creating page: ${e.message}', error: e, stackTrace: stack);
       return null;
     } catch (e, stack) {
+      debugPrint('❌ General error creating page: $e');
+      debugPrint('Stack trace: $stack');
       _logger.e('Error creating page: $e', error: e, stackTrace: stack);
       return null;
     }
   }
-
   /// Get all pages for a book
-  Future<List<BookPage>> getBookPages(String bookId) async {
-    try {
-      final response = await _client
-          .from('BookPages')
-          .select()
-          .eq('BookId', int.parse(bookId))
-          .order('PageNumber', ascending: true);
+ Future<List<BookPage>> getBookPages(String bookId) async {
+  final startTime = DateTime.now();
+  debugPrint('🔵 [BookPageService] === START getBookPages ===');
+  debugPrint('🔵 [BookPageService] Book ID: $bookId');
+  
+  try {
+    debugPrint('🔵 [BookPageService] Querying Supabase...');
+    final queryStartTime = DateTime.now();
+    
+    final response = await _client
+        .from('BookPages')
+        .select()
+        .eq('BookId', int.parse(bookId))
+        .order('PageNumber', ascending: true);
 
-      final pages = (response as List)
-          .map((json) => BookPage.fromJson(json))
-          .toList();
+    final queryEndTime = DateTime.now();
+    final queryDuration = queryEndTime.difference(queryStartTime).inMilliseconds;
+    
+    debugPrint('🔵 [BookPageService] ✅ Query completed in ${queryDuration}ms');
+    debugPrint('🔵 [BookPageService] Response length: ${(response as List).length}');
 
-      _logger.i('Fetched ${pages.length} pages for book $bookId');
-      return pages;
-    } on PostgrestException catch (e, stack) {
-      _logger.e('Supabase error fetching pages: ${e.message}', error: e, stackTrace: stack);
-      return [];
-    } catch (e, stack) {
-      _logger.e('Error fetching pages: $e', error: e, stackTrace: stack);
+    if ((response as List).isEmpty) {
+      debugPrint('🔵 [BookPageService] ⚠️ No pages found for book $bookId');
+      final totalDuration = DateTime.now().difference(startTime).inMilliseconds;
+      debugPrint('🔵 [BookPageService] === END getBookPages (${totalDuration}ms) ===\n');
       return [];
     }
+
+    debugPrint('🔵 [BookPageService] Parsing ${response.length} pages...');
+    final parseStartTime = DateTime.now();
+    
+    final pages = response
+        .map((json) {
+          try {
+            return BookPage.fromJson(json);
+          } catch (e) {
+            debugPrint('🔵 [BookPageService] ❌ Error parsing page: $e');
+            return null;
+          }
+        })
+        .whereType<BookPage>()
+        .toList();
+
+    final parseEndTime = DateTime.now();
+    final parseDuration = parseEndTime.difference(parseStartTime).inMilliseconds;
+    
+    debugPrint('🔵 [BookPageService] ✅ Parsed ${pages.length} pages in ${parseDuration}ms');
+    
+    if (pages.isNotEmpty) {
+      final firstPage = pages.first;
+      debugPrint('🔵 [BookPageService] --- FIRST PAGE DETAILS ---');
+      debugPrint('🔵   Page ID: ${firstPage.id}');
+      debugPrint('🔵   Page Number: ${firstPage.pageNumber}');
+      debugPrint('🔵   Background Color: ${firstPage.background.color}');
+      debugPrint('🔵   Background Image: ${firstPage.background.imageUrl ?? "NONE"}');
+      
+      if (firstPage.background.imageUrl != null && firstPage.background.imageUrl!.isNotEmpty) {
+        final url = firstPage.background.imageUrl!;
+        debugPrint('🔵   Image URL: ${url.length > 80 ? "${url.substring(0, 80)}..." : url}');
+        debugPrint('🔵   Valid URL: ${url.startsWith('http://') || url.startsWith('https://')}');
+      }
+      
+      debugPrint('🔵   Elements: ${firstPage.elements.length}');
+      debugPrint('🔵 ------------------------------');
+    }
+
+    final totalDuration = DateTime.now().difference(startTime).inMilliseconds;
+    debugPrint('🔵 [BookPageService] ✅ Total operation: ${totalDuration}ms');
+    
+    _logger.i('Fetched ${pages.length} pages for book $bookId in ${totalDuration}ms');
+    
+    debugPrint('🔵 [BookPageService] === END getBookPages ===\n');
+    return pages;
+    
+  } on PostgrestException catch (e, stack) {
+    final totalDuration = DateTime.now().difference(startTime).inMilliseconds;
+    debugPrint('🔵 [BookPageService] ❌ Supabase error after ${totalDuration}ms: ${e.message}');
+    debugPrint('🔵   Code: ${e.code}');
+    debugPrint('🔵   Details: ${e.details}');
+    debugPrint('🔵   Hint: ${e.hint}');
+    _logger.e('Supabase error fetching pages: ${e.message}', error: e, stackTrace: stack);
+    return [];
+    
+  } catch (e, stack) {
+    final totalDuration = DateTime.now().difference(startTime).inMilliseconds;
+    debugPrint('🔵 [BookPageService] ❌ General error after ${totalDuration}ms: $e');
+    _logger.e('Error fetching pages: $e', error: e, stackTrace: stack);
+    return [];
   }
+}
 
   /// Get a single page by ID
   Future<BookPage?> getPage(String pageId) async {
@@ -188,6 +289,7 @@ class BookPageService {
         pageNumber: newPageNumber,
         elements: originalPage.elements,
         background: originalPage.background,
+        pageSize: originalPage.pageSize, // ✅ COPY THE PAGE SIZE TOO
       );
 
       _logger.i('Page duplicated: $pageId -> ${newPage?.id}');
@@ -279,45 +381,49 @@ class BookPageService {
   }
 
   /// Update element on page
-/// Update element on page
-Future<BookPage?> updateElement(String pageId, PageElement updatedElement) async {
-  try {
-    final userId = _client.auth.currentUser?.id;
-    if (userId == null) return null;
+  Future<BookPage?> updateElement(String pageId, PageElement updatedElement) async {
+    try {
+      final userId = _client.auth.currentUser?.id;
+      if (userId == null) {
+        _logger.e('No authenticated user found');
+        return null;
+      }
 
-    // First, get the current page with ALL elements
-    final pageResponse = await _client
-        .from('BookPages')
-        .select()
-        .eq('PageId', int.parse(pageId))
-        .single();
+      // 🚀 OPTIMIZED: Use a single atomic read-modify-write operation
+      // First, get the current page with ALL elements
+      final pageResponse = await _client
+          .from('BookPages')
+          .select()
+          .eq('PageId', int.parse(pageId))
+          .single();
 
-    final currentPage = BookPage.fromJson(pageResponse);
-    
-    // Update the specific element in the elements list
-    final updatedElements = currentPage.elements.map((element) {
-      return element.id == updatedElement.id ? updatedElement : element;
-    }).toList();
+      final currentPage = BookPage.fromJson(pageResponse);
 
-    // Update the page with the modified elements
-    final updateResponse = await _client
-        .from('BookPages')
-        .update({
-          'Elements': updatedElements.map((e) => e.toJson()).toList(),
-          'LastUpdateUser': userId.toString(),
-        })
-        .eq('PageId', int.parse(pageId))
-        .select()
-        .single();
+      // Update the specific element in the elements list
+      final updatedElements = currentPage.elements.map((element) {
+        return element.id == updatedElement.id ? updatedElement : element;
+      }).toList();
 
-    _logger.i('Element updated successfully: ${updatedElement.id}');
-    _logger.i('New position: ${updatedElement.position}');
-    return BookPage.fromJson(updateResponse);
-  } catch (e, stack) {
-    _logger.e('Error updating element: $e', error: e, stackTrace: stack);
-    return null;
+      // 🚀 CRITICAL: Update the page with the modified elements in one operation
+      final updateResponse = await _client
+          .from('BookPages')
+          .update({
+            'Elements': updatedElements.map((e) => e.toJson()).toList(),
+            'LastUpdateUser': userId.toString(),
+            'LastUpdateDate': DateTime.now().toIso8601String(),
+          })
+          .eq('PageId', int.parse(pageId))
+          .select()
+          .single();
+
+      _logger.i('Element updated successfully: ${updatedElement.id}');
+      _logger.i('New position: ${updatedElement.position}');
+      return BookPage.fromJson(updateResponse);
+    } catch (e, stack) {
+      _logger.e('Error updating element: $e', error: e, stackTrace: stack);
+      return null;
+    }
   }
-}
 
   /// Remove element from page
   Future<BookPage?> removeElement(String pageId, String elementId) async {
@@ -337,59 +443,78 @@ Future<BookPage?> updateElement(String pageId, PageElement updatedElement) async
   }
 
   /// Update page background
-/// Update page background
-Future<BookPage?> updatePageBackground(String pageId, PageBackground background) async {
-  debugPrint('🟢 === BookPageService.updatePageBackground START ===');
-  debugPrint('Page ID: $pageId');
-  debugPrint('Background Color: ${background.color}');
-  debugPrint('Background Image: ${background.imageUrl}');
-  
-  try {
-    final userId = _client.auth.currentUser?.id;
-    if (userId == null) {
-      debugPrint('❌ No authenticated user found');
-      _logger.e('No authenticated user found');
+  Future<BookPage?> updatePageBackground(String pageId, PageBackground background) async {
+    debugPrint('🟢 === BookPageService.updatePageBackground START ===');
+    debugPrint('Page ID: $pageId');
+    debugPrint('Background Color: ${background.color}');
+    debugPrint('Background Image: ${background.imageUrl}');
+    
+    try {
+      final userId = _client.auth.currentUser?.id;
+      if (userId == null) {
+        debugPrint('❌ No authenticated user found');
+        _logger.e('No authenticated user found');
+        return null;
+      }
+      
+      debugPrint('✅ User ID: $userId');
+
+      final backgroundJson = background.toJson();
+      debugPrint('📦 Background JSON: $backgroundJson');
+
+      final response = await _client
+          .from('BookPages')
+          .update({
+            'Background': backgroundJson,
+            'LastUpdateUser': userId.toString(),
+          })
+          .eq('PageId', int.parse(pageId))
+          .select()
+          .single();
+
+      debugPrint('✅ Database response received');
+      debugPrint('Response: $response');
+      
+      _logger.i('Page background updated successfully: $pageId');
+      
+      final updatedPage = BookPage.fromJson(response);
+      debugPrint('✅ Updated page parsed successfully');
+      debugPrint('Updated Background Color: ${updatedPage.background.color}');
+      debugPrint('Updated Background Image: ${updatedPage.background.imageUrl}');
+      debugPrint('🟢 === BookPageService.updatePageBackground END ===');
+      
+      return updatedPage;
+    } on PostgrestException catch (e, stack) {
+      debugPrint('❌ Supabase error: ${e.message}');
+      debugPrint('Error details: ${e.details}');
+      debugPrint('Error hint: ${e.hint}');
+      _logger.e('Supabase error updating background: ${e.message}', error: e, stackTrace: stack);
+      return null;
+    } catch (e, stack) {
+      debugPrint('❌ General error: $e');
+      _logger.e('Error updating background: $e', error: e, stackTrace: stack);
       return null;
     }
-    
-    debugPrint('✅ User ID: $userId');
-
-    final backgroundJson = background.toJson();
-    debugPrint('📦 Background JSON: $backgroundJson');
-
-    final response = await _client
-        .from('BookPages')
-        .update({
-          'Background': backgroundJson,
-          'LastUpdateUser': userId.toString(),
-        })
-        .eq('PageId', int.parse(pageId))
-        .select()
-        .single();
-
-    debugPrint('✅ Database response received');
-    debugPrint('Response: $response');
-    
-    _logger.i('Page background updated successfully: $pageId');
-    
-    final updatedPage = BookPage.fromJson(response);
-    debugPrint('✅ Updated page parsed successfully');
-    debugPrint('Updated Background Color: ${updatedPage.background.color}');
-    debugPrint('Updated Background Image: ${updatedPage.background.imageUrl}');
-    debugPrint('🟢 === BookPageService.updatePageBackground END ===');
-    
-    return updatedPage;
-  } on PostgrestException catch (e, stack) {
-    debugPrint('❌ Supabase error: ${e.message}');
-    debugPrint('Error details: ${e.details}');
-    debugPrint('Error hint: ${e.hint}');
-    _logger.e('Supabase error updating background: ${e.message}', error: e, stackTrace: stack);
-    return null;
-  } catch (e, stack) {
-    debugPrint('❌ General error: $e');
-    _logger.e('Error updating background: $e', error: e, stackTrace: stack);
-    return null;
   }
-}
 
+  /// Update page elements (for reordering)
+  Future<bool> updatePageElements(String pageId, List<PageElement> elements) async {
+    try {
+      final elementsJson = elements.map((e) => e.toJson()).toList();
+      
+      await _client
+          .from('BookPages')
+          .update({
+            'Elements': elementsJson,
+            'LastUpdateDate': DateTime.now().toIso8601String()
+          })
+          .eq('PageId', int.parse(pageId));
+      
+      _logger.i('Elements updated for page $pageId');
+      return true;
+    } catch (e) {
+      _logger.e('Error updating page elements: $e');
+      return false;
+    }
+  }
 }

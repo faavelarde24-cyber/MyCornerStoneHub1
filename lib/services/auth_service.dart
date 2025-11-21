@@ -1,6 +1,6 @@
 // lib/services/auth_service.dart
+import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:flutter/foundation.dart';
 import '../models/user_model.dart'; // Import your AppUser model
 
 class AuthResult {
@@ -19,7 +19,7 @@ class AuthResult {
   });
 }
 
-class AuthService extends ChangeNotifier {
+class AuthService {
   final SupabaseClient _supabase = Supabase.instance.client;
   AppUser? _currentAppUser;
 
@@ -42,7 +42,6 @@ class AuthService extends ChangeNotifier {
       await _loadUserProfile(user.id);
     } else {
       _currentAppUser = null;
-      notifyListeners();
     }
   }
 
@@ -56,11 +55,9 @@ class AuthService extends ChangeNotifier {
           .single();
 
       _currentAppUser = AppUser.fromJson(userProfile);
-      notifyListeners();
     } catch (e) {
       debugPrint('⛔ Error loading user profile: $e');
       _currentAppUser = null;
-      notifyListeners();
     }
   }
 
@@ -295,7 +292,6 @@ class AuthService extends ChangeNotifier {
     try {
       await _supabase.auth.signOut();
       _currentAppUser = null;
-      notifyListeners();
     } catch (e) {
       debugPrint('⛔ Error during sign-out: $e');
       rethrow;

@@ -24,7 +24,8 @@ class AppDrawer extends StatelessWidget {
   final VoidCallback? onCreateLibrary;
   final VoidCallback? onJoinLibrary;
   final VoidCallback? onShowBooks;
-  final VoidCallback? onCreateBook; 
+  final VoidCallback? onCreateBook;
+  final VoidCallback? onBookDashboardTap; 
   final bool isStudent;
 
   const AppDrawer({
@@ -45,6 +46,7 @@ class AppDrawer extends StatelessWidget {
     this.onJoinLibrary,
     this.onShowBooks,
     this.onCreateBook,
+    this.onBookDashboardTap,
     this.isStudent = false,
   });
 
@@ -167,6 +169,17 @@ class AppDrawer extends StatelessWidget {
                               ),
                             ),
                           ),
+
+                          // Add Book Dashboard option
+                          if (onBookDashboardTap != null)
+                            _buildMenuItem(
+                              Icons.auto_stories,
+                              'Book Dashboard',
+                              () {
+                                onCloseDrawer();
+                                onBookDashboardTap!();
+                              },
+                            ),
 
                           if (onShowBooks != null)
                             _buildMenuItem(

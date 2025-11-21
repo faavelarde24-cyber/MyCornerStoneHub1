@@ -45,7 +45,7 @@ class EditorToolbar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pagesAsync = ref.watch(bookPagesProvider);
+    final pagesAsync = ref.watch(bookPagesProvider(bookId));
     final pageIndex = ref.watch(currentPageIndexProvider);
 
     return Container(

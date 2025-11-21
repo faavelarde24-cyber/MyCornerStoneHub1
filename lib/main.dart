@@ -1,16 +1,20 @@
 // lib/main.dart
 import 'package:cornerstone_hub/services/supabase_service.dart';
 import 'package:cornerstone_hub/services/language_service.dart';
-import 'package:cornerstone_hub/services/auth_service.dart';
 import 'package:cornerstone_hub/providers/book_providers.dart';
 import 'package:cornerstone_hub/providers/library_providers.dart';
+import 'package:cornerstone_hub/pages/dashboard/book_dashboard_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:provider/provider.dart' as provider;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'pages/auth/login_page.dart';
 import 'pages/introduction_animation_screen.dart';
+
+// Provider for LanguageService
+final languageServiceProvider = Provider<LanguageService>((ref) {
+  return LanguageService();
+});
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,7 +31,7 @@ Future<void> main() async {
   );
 }
 
-class MyApp extends ConsumerStatefulWidget {
+  class MyApp extends ConsumerStatefulWidget {
   final bool hasSeenIntro;
 
   const MyApp({super.key, required this.hasSeenIntro});
@@ -70,21 +74,20 @@ class _MyAppState extends ConsumerState<MyApp> {
 
   @override
   Widget build(BuildContext context) {
-    return provider.MultiProvider(
-      providers: [
-        provider.ChangeNotifierProvider(create: (context) => AuthService()),
-        provider.ChangeNotifierProvider(create: (context) => LanguageService()),
-      ],
-      child: MaterialApp(
-        title: 'Cornerstone Hub',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          useMaterial3: true,
-          fontFamily: 'Poppins',
-        ),
-        home: widget.hasSeenIntro ? const LoginPage() : const IntroWrapper(),
+    return MaterialApp(
+      title: 'MyCornerStoneHub',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+        fontFamily: 'WorkSans',
       ),
+      initialRoute: widget.hasSeenIntro ? '/login' : '/intro',
+      routes: {
+        '/intro': (context) => const IntroWrapper(),
+        '/login': (context) => const LoginPage(),
+        '/dashboard': (context) => const BookDashboardPage(),
+      },
     );
   }
 }
@@ -103,19 +106,7 @@ class _IntroWrapperState extends State<IntroWrapper> {
 
     if (!mounted) return;
 
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            const LoginPage(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return FadeTransition(
-            opacity: animation,
-            child: child,
-          );
-        },
-        transitionDuration: const Duration(milliseconds: 600),
-      ),
-    );
+    Navigator.of(context).pushReplacementNamed('/login');
   }
 
   @override

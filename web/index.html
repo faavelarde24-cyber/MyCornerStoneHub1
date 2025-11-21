@@ -31,6 +31,27 @@
 
   <title>Cornerstone Hub</title>
   <link rel="manifest" href="manifest.json">
+  
+  <!-- Disable right-click context menu -->
+  <script>
+    // Prevent default context menu on right-click
+    document.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    }, { capture: true, passive: false });
+    
+    // Also prevent it during DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', function() {
+      document.body.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }, { capture: true, passive: false });
+    });
+    
+    console.log('✅ Browser context menu disabled');
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

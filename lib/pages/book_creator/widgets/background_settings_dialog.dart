@@ -1,8 +1,8 @@
 // lib/pages/book_creator/widgets/background_settings_dialog.dart
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:io';
 import '../../../models/book_models.dart';
+import '../../../services/storage_service.dart';
 
 class BackgroundSettingsDialog extends StatefulWidget {
   final PageBackground currentBackground;
@@ -22,6 +22,10 @@ class _BackgroundSettingsDialogState extends State<BackgroundSettingsDialog> {
   late Color _selectedColor;
   String? _selectedImageUrl;
   final ImagePicker _imagePicker = ImagePicker();
+  
+  // ADD THESE NEW VARIABLES
+  bool _isUploadingImage = false;
+  String? _uploadError;
 
   @override
   void initState() {
@@ -30,11 +34,52 @@ class _BackgroundSettingsDialogState extends State<BackgroundSettingsDialog> {
     _selectedImageUrl = widget.currentBackground.imageUrl;
   }
 
+  // REPLACE THE _pickBackgroundImage METHOD
   Future<void> _pickBackgroundImage() async {
-    final XFile? image = await _imagePicker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+      
+      if (image == null) return;
+
+      // Show uploading state
       setState(() {
-        _selectedImageUrl = image.path;
+        _isUploadingImage = true;
+        _uploadError = null;
+      });
+
+      debugPrint('📸 Uploading background image...');
+
+      // ✅ UPLOAD TO SUPABASE STORAGE
+      final storageService = StorageService();
+      final bytes = await image.readAsBytes();
+      
+      final imageUrl = await storageService.uploadFile(
+        bytes,
+        'book-images',
+        'backgrounds',
+        originalFileName: image.name,
+      );
+
+      if (imageUrl != null) {
+        debugPrint('✅ Background image uploaded: $imageUrl');
+        setState(() {
+          _selectedImageUrl = imageUrl; // Store Supabase URL, not local path
+          _isUploadingImage = false;
+        });
+      } else {
+        setState(() {
+          _isUploadingImage = false;
+          _uploadError = 'Failed to upload image. Please try again.';
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ Error uploading background image: $e');
+      setState(() {
+        _isUploadingImage = false;
+        _uploadError = 'Error: $e';
       });
     }
   }
@@ -85,7 +130,7 @@ class _BackgroundSettingsDialogState extends State<BackgroundSettingsDialog> {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
-                if (_selectedImageUrl != null)
+                if (_selectedImageUrl != null && !_isUploadingImage)
                   TextButton.icon(
                     onPressed: () {
                       setState(() {
@@ -99,16 +144,60 @@ class _BackgroundSettingsDialogState extends State<BackgroundSettingsDialog> {
             ),
             const SizedBox(height: 12),
             
-            if (_selectedImageUrl != null)
+            // ADD ERROR MESSAGE DISPLAY
+            if (_uploadError != null)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade300),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline, color: Colors.red.shade700, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _uploadError!,
+                        style: TextStyle(color: Colors.red.shade700, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            
+            // ADD UPLOADING STATE
+            if (_isUploadingImage)
+              Container(
+                height: 150,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade300, width: 2),
+                  color: Colors.blue.shade50,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Uploading image...',
+                      style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+              )
+            else if (_selectedImageUrl != null)
               Container(
                 height: 150,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.grey.shade300),
                   image: DecorationImage(
-                    image: _selectedImageUrl!.startsWith('http')
-                        ? NetworkImage(_selectedImageUrl!) as ImageProvider
-                        : FileImage(File(_selectedImageUrl!)),
+                    // ✅ NOW THIS WILL WORK - IT'S A SUPABASE URL
+                    image: NetworkImage(_selectedImageUrl!),
                     fit: BoxFit.cover,
                   ),
                 ),
@@ -149,7 +238,8 @@ class _BackgroundSettingsDialogState extends State<BackgroundSettingsDialog> {
                 ),
                 const SizedBox(width: 12),
                 ElevatedButton(
-                  onPressed: () {
+                  // DISABLE APPLY BUTTON WHILE UPLOADING
+                  onPressed: _isUploadingImage ? null : () {
                     debugPrint('🟡 === BackgroundSettingsDialog Apply Button ===');
                     debugPrint('Selected Color: $_selectedColor');
                     debugPrint('Selected Image: $_selectedImageUrl');

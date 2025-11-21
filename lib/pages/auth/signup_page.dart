@@ -1,24 +1,23 @@
 // lib/pages/auth/signup_page.dart
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart'; 
-import '../../../services/auth_service.dart';
-import '../../../utils/role_redirect.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../providers/auth_providers.dart';
+import '../../utils/role_redirect.dart';
 
-class SignUpPage extends StatefulWidget {
+class SignUpPage extends ConsumerStatefulWidget {
   const SignUpPage({super.key});
 
   @override
-  State<SignUpPage> createState() => _SignUpPageState();
+  ConsumerState<SignUpPage> createState() => _SignUpPageState();
 }
 
-class _SignUpPageState extends State<SignUpPage> {
+class _SignUpPageState extends ConsumerState<SignUpPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
   final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _organizationCodeController = TextEditingController();
-  final AuthService _authService = AuthService();
 
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
@@ -27,70 +26,71 @@ class _SignUpPageState extends State<SignUpPage> {
   String _selectedRole = 'student';
   final List<String> _roles = ['student', 'teacher', 'principal'];
 
-Future<void> _handleSignUp() async {
-  if (_emailController.text.isEmpty ||
-      _passwordController.text.isEmpty ||
-      _confirmPasswordController.text.isEmpty ||
-      _fullNameController.text.isEmpty) {
-    _showSnackBar('Please fill in all required fields');
-    return;
-  }
+  Future<void> _handleSignUp() async {
+    if (_emailController.text.isEmpty ||
+        _passwordController.text.isEmpty ||
+        _confirmPasswordController.text.isEmpty ||
+        _fullNameController.text.isEmpty) {
+      _showSnackBar('Please fill in all required fields');
+      return;
+    }
 
-  if (_passwordController.text != _confirmPasswordController.text) {
-    _showSnackBar('Passwords do not match');
-    return;
-  }
+    if (_passwordController.text != _confirmPasswordController.text) {
+      _showSnackBar('Passwords do not match');
+      return;
+    }
 
-  if (_passwordController.text.length < 6) {
-    _showSnackBar('Password must be at least 6 characters');
-    return;
-  }
+    if (_passwordController.text.length < 6) {
+      _showSnackBar('Password must be at least 6 characters');
+      return;
+    }
 
-  setState(() => _isLoading = true);
+    setState(() => _isLoading = true);
 
-  try {
-    final result = await _authService.signUp(
-      email: _emailController.text.trim(),
-      password: _passwordController.text.trim(),
-      fullName: _fullNameController.text.trim(),
-      role: _selectedRole,
-      phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
-      organizationCode: _organizationCodeController.text.trim().isEmpty 
-          ? null 
-          : _organizationCodeController.text.trim(),
-    );
-
-    if (!mounted) return;
-
-    if (result.success && result.role != null) {
-      _showSnackBar('Sign-up successful! Redirecting...');
-      
-      await Future.delayed(const Duration(seconds: 1));
-      if (!mounted) return;
-      
-      // Navigate with fresh ProviderScope to force provider refresh
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (context) {
-            return ProviderScope(
-              child: RoleRedirect.getDashboardForRole(result.role),
-            );
-          },
-        ),
+    try {
+      final authService = ref.read(authServiceProvider);
+      final result = await authService.signUp(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+        fullName: _fullNameController.text.trim(),
+        role: _selectedRole,
+        phone: _phoneController.text.trim().isEmpty ? null : _phoneController.text.trim(),
+        organizationCode: _organizationCodeController.text.trim().isEmpty 
+            ? null 
+            : _organizationCodeController.text.trim(),
       );
-    } else {
-      _showSnackBar(result.error ?? 'Sign-up failed');
-    }
-  } catch (e) {
-    if (mounted) {
-      _showSnackBar('An error occurred. Please try again.');
-    }
-  } finally {
-    if (mounted) {
-      setState(() => _isLoading = false);
+
+      if (!mounted) return;
+
+      if (result.success && result.role != null) {
+        _showSnackBar('Sign-up successful! Redirecting...');
+        
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        
+        // Navigate with fresh ProviderScope to force provider refresh
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) {
+              return ProviderScope(
+                child: RoleRedirect.getDashboardForRole(result.role),
+              );
+            },
+          ),
+        );
+      } else {
+        _showSnackBar(result.error ?? 'Sign-up failed');
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar('An error occurred. Please try again.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
-}
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(

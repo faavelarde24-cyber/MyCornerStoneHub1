@@ -1,19 +1,19 @@
 // lib/pages/auth/auth_wrapper.dart
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../services/auth_service.dart';
+import '../../providers/auth_providers.dart';
 import '../../utils/role_redirect.dart';
 import 'login_page.dart';
 
-class AuthWrapper extends StatefulWidget {
+class AuthWrapper extends ConsumerStatefulWidget {
   const AuthWrapper({super.key});
 
   @override
-  State<AuthWrapper> createState() => _AuthWrapperState();
+  ConsumerState<AuthWrapper> createState() => _AuthWrapperState();
 }
 
-class _AuthWrapperState extends State<AuthWrapper> {
-  final AuthService _authService = AuthService();
+class _AuthWrapperState extends ConsumerState<AuthWrapper> {
   bool _isLoading = true;
   String? _userRole;
 
@@ -27,11 +27,12 @@ class _AuthWrapperState extends State<AuthWrapper> {
   // Check initial authentication state
   Future<void> _checkAuthState() async {
     try {
-      final session = _authService.currentSession;
+      final authService = ref.read(authServiceProvider);
+      final session = authService.currentSession;
       
       if (session != null) {
         // User is logged in, get their role
-        final role = await _authService.getCurrentUserRole();
+        final role = await authService.getCurrentUserRole();
         
         if (mounted) {
           setState(() {
@@ -58,12 +59,13 @@ class _AuthWrapperState extends State<AuthWrapper> {
 
   // Listen to auth state changes
   void _setupAuthListener() {
-    _authService.authStateChanges.listen((AuthState data) async {
+    final authService = ref.read(authServiceProvider);
+    authService.authStateChanges.listen((AuthState data) async {
       final session = data.session;
       
       if (session != null) {
         // User logged in
-        final role = await _authService.getCurrentUserRole();
+        final role = await authService.getCurrentUserRole();
         
         if (mounted) {
           setState(() {

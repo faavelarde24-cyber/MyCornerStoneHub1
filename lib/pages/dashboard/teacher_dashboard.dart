@@ -3,10 +3,8 @@ import 'package:cornerstone_hub/providers/book_providers.dart';
 import 'package:cornerstone_hub/widgets/app_drawer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:provider/provider.dart' as provider;
-import '../../app_theme.dart';
-import '../../services/auth_service.dart';
 import '../../services/language_service.dart';
+import '../../app_theme.dart';
 import '../../providers/book_providers.dart' as book_providers;
 import '../../models/book_models.dart';
 import '../auth/login_page.dart';
@@ -19,7 +17,9 @@ import 'package:cornerstone_hub/providers/library_providers.dart';
 import 'package:cornerstone_hub/models/library_models.dart';
 import 'package:cornerstone_hub/models/app_theme_mode.dart';
 import 'package:cornerstone_hub/pages/book/widgets/books_list_dialog.dart';
-
+import '../../providers/auth_providers.dart';
+import '../../main.dart';
+import 'package:cornerstone_hub/pages/dashboard/book_dashboard_page.dart';
 
 class ModernTeacherDashboard extends ConsumerStatefulWidget {
   const ModernTeacherDashboard({super.key});
@@ -30,7 +30,6 @@ class ModernTeacherDashboard extends ConsumerStatefulWidget {
 
 class _ModernTeacherDashboardState extends ConsumerState<ModernTeacherDashboard> 
     with SingleTickerProviderStateMixin {
-  final AuthService _authService = AuthService();
   late AnimationController _animationController;
   AppThemeMode _themeMode = AppThemeMode.gradient; // Default theme
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -116,6 +115,15 @@ void _showLibrariesList() {
   );
 }
 
+void _navigateToBookDashboard() {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => const BookDashboardPage(),
+    ),
+  );
+}
+
 void _showBooksList() {
   showDialog(
     context: context,
@@ -135,7 +143,8 @@ void _showBooksList() {
     ref.invalidate(currentPageIndexProvider);
     ref.invalidate(bookPagesProvider);
     
-    await _authService.signOut();
+    final authService = ref.read(authServiceProvider);
+    await authService.signOut();
     if (!mounted) return;
     
     Navigator.of(context).pushAndRemoveUntil(
@@ -313,124 +322,146 @@ void _showBooksList() {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final languageService = provider.Provider.of<LanguageService>(context);
-    final backgroundColor = _getBackgroundColor();
-    final cardColor = _getCardColor();
-    final textColor = _getTextColor();
-    final subtitleColor = _getSubtitleColor();
+@override
+Widget build(BuildContext context) {
+  final languageService = ref.watch(languageServiceProvider);
+  final backgroundColor = _getBackgroundColor();
+  final cardColor = _getCardColor();
+  final textColor = _getTextColor();
+  final subtitleColor = _getSubtitleColor();
+  final authService = ref.read(authServiceProvider);
 
-    return Container(
-      decoration: _themeMode == AppThemeMode.gradient
-          ? const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0xFFE84C3D), // Red
-                  Color(0xFFE67E22), // Orange
-                  Color(0xFFF39C12), // Yellow-Orange
-                ],
-              ),
-            )
-          : BoxDecoration(color: backgroundColor),
-      child: Scaffold(
-        key: _scaffoldKey,
-        backgroundColor: Colors.transparent,
-        endDrawer: AppDrawer(
-          authService: _authService,
-          languageService: languageService,
-          isDarkMode: _isDarkMode,
-          themeMode: _themeMode,
-          cardColor: cardColor,
-          textColor: textColor,
-          subtitleColor: subtitleColor,
-          onThemeChanged: _setThemeMode,  
-          onLogout: _handleLogout,
-          onShowComingSoon: _showComingSoon,
-          onCloseDrawer: () => Navigator.pop(context),
-          onShowLibraries: _showLibrariesList,
-          onCreateLibrary: _showCreateLibraryDialog,
-          onShowBooks: _showBooksList,        // ✅ ADD THIS
-          onCreateBook: _createNewBook, 
-          isStudent: false,
-        ),
-        body: Column(
-          children: [
-            _buildAppBar(backgroundColor, textColor, languageService),
-            Expanded(
-              child: _buildDashboardContent(cardColor, textColor, subtitleColor, languageService),
+  return Container(
+    decoration: _themeMode == AppThemeMode.gradient
+        ? const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Color(0xFFE84C3D), // Red
+                Color(0xFFE67E22), // Orange
+                Color(0xFFF39C12), // Yellow-Orange
+              ],
             ),
-          ],
-        ),
+          )
+        : BoxDecoration(color: backgroundColor),
+    child: Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: Colors.transparent,
+      endDrawer: AppDrawer(
+        authService: authService,
+        languageService: languageService,
+        isDarkMode: _isDarkMode,
+        themeMode: _themeMode,
+        cardColor: cardColor,
+        textColor: textColor,
+        subtitleColor: subtitleColor,
+        onThemeChanged: _setThemeMode,  
+        onLogout: _handleLogout,
+        onShowComingSoon: _showComingSoon,
+        onCloseDrawer: () => Navigator.pop(context),
+        onShowLibraries: _showLibrariesList,
+        onCreateLibrary: _showCreateLibraryDialog,
+        onShowBooks: _showBooksList,
+        onCreateBook: _createNewBook,
+        onBookDashboardTap: _navigateToBookDashboard,
+        isStudent: false,
       ),
-    );
-  }
-
-  Widget _buildAppBar(Color backgroundColor, Color textColor, LanguageService languageService) {
-    return Container(
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + 8,
-        left: 16,
-        right: 16,
-        bottom: 8,
-      ),
-      decoration: BoxDecoration(
-        color: _themeMode == AppThemeMode.gradient 
-            ? Colors.black.withValues(alpha:0.2) 
-            : backgroundColor,
-        boxShadow: [
-          BoxShadow(
-            color: _isDarkMode 
-                ? Colors.black.withValues(alpha:0.3)
-                : AppTheme.grey.withValues(alpha:0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
+      body: Column(
         children: [
-          Text(
-            'MyCornerStoneHub',
-            style: AppTheme.headline.copyWith(
-              color: textColor,
-              letterSpacing: -0.5,
-            ),
-          ),
-          const Spacer(),
-          IconButton(
-            icon: Icon(
-              _themeMode == AppThemeMode.light 
-                  ? Icons.light_mode          
-                  : _themeMode == AppThemeMode.dark 
-                      ? Icons.dark_mode      
-                      : Icons.gradient,   
-              color: textColor,
-            ),
-            onPressed: _toggleTheme,
-            tooltip: 'Toggle Theme',
-          ),
-          const SizedBox(width: 8),
-          InkWell(
-            onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
-            borderRadius: BorderRadius.circular(20),
-            child: CircleAvatar(
-              radius: 18,
-              backgroundColor: const Color(0xFF6C5CE7),
-              child: Text(
-                _authService.currentUser?.email?.substring(0, 1).toUpperCase() ?? 'T',
-                style: AppTheme.title.copyWith(
-                  color: const Color.fromARGB(255, 239, 239, 239),
-                ),
-              ),
-            ),
+          _buildAppBar(backgroundColor, textColor, languageService),
+          Expanded(
+            child: _buildDashboardContent(cardColor, textColor, subtitleColor, languageService),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
+  Widget _buildAppBar(
+  Color backgroundColor,
+  Color textColor,
+  LanguageService languageService,
+) {
+  return Container(
+    padding: EdgeInsets.only(
+      top: MediaQuery.of(context).padding.top + 8,
+      left: 16,
+      right: 16,
+      bottom: 8,
+    ),
+    decoration: BoxDecoration(
+      color: _themeMode == AppThemeMode.gradient
+          ? Colors.black.withValues(alpha: 0.2)
+          : backgroundColor,
+      boxShadow: [
+        BoxShadow(
+          color: _isDarkMode
+              ? Colors.black.withValues(alpha: 0.3)
+              : AppTheme.grey.withValues(alpha: 0.1),
+          blurRadius: 10,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    ),
+    child: Row(
+      children: [
+        Text(
+          'MyCornerStoneHub',
+          style: AppTheme.headline.copyWith(
+            color: textColor,
+            letterSpacing: -0.5,
+          ),
+        ),
+        const Spacer(),
+        IconButton(
+          icon: Icon(
+            _themeMode == AppThemeMode.light
+                ? Icons.light_mode
+                : _themeMode == AppThemeMode.dark
+                    ? Icons.dark_mode
+                    : Icons.gradient,
+            color: textColor,
+          ),
+          onPressed: _toggleTheme,
+          tooltip: 'Toggle Theme',
+        ),
+        const SizedBox(width: 8),
+        // Add Book Dashboard Icon
+        IconButton(
+          icon: const Icon(Icons.auto_stories),
+          color: textColor,
+          onPressed: _navigateToBookDashboard,
+          tooltip: 'Book Dashboard',
+        ),
+        const SizedBox(width: 8),
+        InkWell(
+          onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+          borderRadius: BorderRadius.circular(20),
+          child: Builder(
+            builder: (context) {
+              final authService = ref.read(authServiceProvider);
+              final email = authService.currentUser?.email;
+              final displayInitial =
+                  (email != null && email.isNotEmpty) ? email[0].toUpperCase() : 'T';
+
+              return CircleAvatar(
+                radius: 18,
+                backgroundColor: const Color(0xFF6C5CE7),
+                child: Text(
+                  displayInitial,
+                  style: AppTheme.title.copyWith(
+                    color: const Color.fromARGB(255, 239, 239, 239),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildDashboardContent(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
     return RefreshIndicator(
