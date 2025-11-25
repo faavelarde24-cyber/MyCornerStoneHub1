@@ -312,6 +312,161 @@ class BookActions {
       return null;
     }
   }
+
+/// Combine multiple books into one
+Future<Book?> combineBooks({
+  required List<String> bookIds,
+  required String title,
+  String? description,
+  bool deleteOriginalBooks = false,
+  List<dynamic>? customPageOrder, // ✅ NEW PARAMETER
+}) async {
+  try {
+    debugPrint('🟢 === BookActions.combineBooks START ===');
+    debugPrint('Book IDs to combine: $bookIds');
+    debugPrint('New title: $title');
+    debugPrint('Delete originals: $deleteOriginalBooks');
+    debugPrint('Custom page order: ${customPageOrder != null ? "Yes (${customPageOrder.length} pages)" : "No"}');
+    
+    if (bookIds.length < 2) {
+      _logger.e('BookActions: Need at least 2 books to combine');
+      return null;
+    }
+
+    _logger.i('BookActions: Combining ${bookIds.length} books');
+    final service = ref.read(bookServiceProvider);
+    final pageService = ref.read(bookPageServiceProvider);
+    
+    // Get all books to combine
+    final books = <Book>[];
+    for (final bookId in bookIds) {
+      final book = await service.getBook(bookId);
+      if (book != null) {
+        books.add(book);
+      }
+    }
+
+    if (books.isEmpty) {
+      _logger.e('BookActions: No valid books found');
+      return null;
+    }
+
+    debugPrint('✅ Loaded ${books.length} books');
+    
+    // Use the page size of the first book
+    final pageSize = books.first.pageSize;
+    debugPrint('📏 Using page size: ${pageSize.width}x${pageSize.height}');
+
+    // Create the new combined book
+    debugPrint('📚 Creating combined book...');
+    final combinedBook = await service.createBook(
+      title: title,
+      description: description,
+      pageSize: pageSize,
+    );
+
+    if (combinedBook == null) {
+      debugPrint('❌ Failed to create combined book');
+      _logger.e('BookActions: Failed to create combined book');
+      return null;
+    }
+
+    debugPrint('✅ Combined book created: ${combinedBook.id}');
+    
+    // ✅ MODIFIED: Copy pages based on custom order or book order
+    int pageNumber = 1;
+    
+    if (customPageOrder != null && customPageOrder.isNotEmpty) {
+      debugPrint('📄 Using custom page order (${customPageOrder.length} pages)');
+      
+      // Custom page order provided
+      for (final pageInfo in customPageOrder) {
+        // Extract page from _PageInfo object
+        final page = pageInfo.page as BookPage;
+        
+        debugPrint('   Copying page ${page.pageNumber} from ${pageInfo.bookTitle} as page $pageNumber');
+        
+        await pageService.createPage(
+          bookId: combinedBook.id,
+          pageNumber: pageNumber,
+          elements: page.elements,
+          background: page.background,
+          pageSize: page.pageSize ?? pageSize,
+        );
+        
+        pageNumber++;
+      }
+    } else {
+      debugPrint('📄 Using default book order');
+      
+      // Default: copy pages in book order
+      for (final book in books) {
+        debugPrint('📄 Copying pages from book: ${book.title}');
+        
+        final pages = await pageService.getBookPages(book.id);
+        debugPrint('   Found ${pages.length} pages');
+        
+        for (final page in pages) {
+          debugPrint('   Copying page ${page.pageNumber} as page $pageNumber');
+          
+          await pageService.createPage(
+            bookId: combinedBook.id,
+            pageNumber: pageNumber,
+            elements: page.elements,
+            background: page.background,
+            pageSize: page.pageSize ?? pageSize,
+          );
+          
+          pageNumber++;
+        }
+      }
+    }
+
+    final totalPages = pageNumber - 1;
+    debugPrint('✅ Total pages copied: $totalPages');
+
+    // Update page count
+    await service.updatePageCount(combinedBook.id, totalPages);
+
+    // Delete original books if requested
+    if (deleteOriginalBooks) {
+      debugPrint('🗑️ Deleting original books...');
+      for (final bookId in bookIds) {
+        await service.deleteBook(bookId);
+        debugPrint('   Deleted book: $bookId');
+      }
+    }
+
+    // Refresh providers
+    ref.invalidate(userBooksProvider);
+    ref.invalidate(bookPagesProvider(combinedBook.id));
+    
+    _logger.i('BookActions: Books combined successfully');
+    debugPrint('🟢 === BookActions.combineBooks END (SUCCESS) ===');
+    
+    return Book(
+      id: combinedBook.id,
+      title: combinedBook.title,
+      description: combinedBook.description,
+      coverImageUrl: combinedBook.coverImageUrl,
+      creatorId: combinedBook.creatorId,
+      status: combinedBook.status,
+      pageSize: combinedBook.pageSize,
+      theme: combinedBook.theme,
+      settings: combinedBook.settings,
+      collaborators: combinedBook.collaborators,
+      pageCount: totalPages,
+      viewCount: combinedBook.viewCount,
+      createdAt: combinedBook.createdAt,
+      updatedAt: DateTime.now(),
+    );
+  } catch (e, stack) {
+    debugPrint('❌ BookActions.combineBooks ERROR: $e');
+    _logger.e('BookActions: Error combining books', error: e, stackTrace: stack);
+    return null;
+  }
+}
+
 }
 
 // Page Actions Provider
@@ -595,54 +750,65 @@ Future<bool> updateElement(String pageId, PageElement element) async {
   }
 
 // Add this method to the PageActions class in book_providers.dart
-Future<bool> reorderPages(String bookId, List<BookPage> updatedPages) async {
+// In PageActions class, modify the reorderPages method signature:
+
+Future<bool> reorderPages(
+  String bookId, 
+  List<BookPage> updatedPages,
+  {bool shouldInvalidate = true}
+) async {
   try {
+    debugPrint('📋 === REORDER PAGES START (OPTIMIZED) ===');
+    debugPrint('   Book ID: $bookId');
+    debugPrint('   Pages to reorder: ${updatedPages.length}');
+    
     _logger.i('PageActions: Reordering ${updatedPages.length} pages for book $bookId');
     final pageService = ref.read(bookPageServiceProvider);
     final bookService = ref.read(bookServiceProvider);
     
-    bool allUpdatesSuccessful = true;
-    
-    // Update each page with new page numbers
-    for (int i = 0; i < updatedPages.length; i++) {
-      final page = updatedPages[i];
-      final newPageNumber = i + 1;
+    // ✅ OPTIMIZED: Single batch update instead of loop
+    final updates = updatedPages.asMap().entries.map((entry) {
+      final index = entry.key;
+      final page = entry.value;
+      final newPageNumber = index + 1;
       
-      // Only update if the page number has changed
-      if (page.pageNumber != newPageNumber) {
-        final updatedPage = await pageService.updatePage(
-          pageId: page.id,
-          pageNumber: newPageNumber,
-          // Keep existing elements and background
-          elements: page.elements,
-          background: page.background,
-        );
-        
-        if (updatedPage == null) {
-          _logger.e('PageActions: Failed to update page ${page.id} to page number $newPageNumber');
-          allUpdatesSuccessful = false;
-        } else {
-          _logger.i('PageActions: Updated page ${page.id} to page number $newPageNumber');
-        }
-      }
+      return {
+        'pageId': page.id,
+        'pageNumber': newPageNumber,
+      };
+    }).toList();
+    
+    debugPrint('📦 Batch updating ${updates.length} pages in single transaction...');
+    
+    // ✅ SINGLE DATABASE CALL - No flicker!
+    final success = await pageService.batchUpdatePageNumbers(updates);
+    
+    if (!success) {
+      debugPrint('❌ Batch update failed');
+      return false;
     }
     
-    // Update page count (in case it changed during reordering)
+    debugPrint('✅ Batch update successful');
+    
+    // Update page count
     await bookService.updatePageCount(bookId, updatedPages.length);
     
-    // Invalidate to force refresh
-    ref.invalidate(bookPagesProvider(bookId));
-    ref.invalidate(bookProvider(bookId));
-    
-    if (allUpdatesSuccessful) {
-      _logger.i('PageActions: Pages reordered successfully');
+    // ✅ CONDITIONAL INVALIDATION
+    if (shouldInvalidate) {
+      debugPrint('🔄 Invalidating providers...');
+      ref.invalidate(bookPagesProvider(bookId));
+      ref.invalidate(bookProvider(bookId));
     } else {
-      _logger.w('PageActions: Some pages failed to update during reorder');
+      debugPrint('⏸️ Skipping provider invalidation');
     }
     
-    return allUpdatesSuccessful;
+    _logger.i('PageActions: Pages reordered successfully');
+    debugPrint('✅ === REORDER PAGES SUCCESS ===\n');
+    
+    return true;
   } catch (e, stack) {
     _logger.e('PageActions: Error reordering pages', error: e, stackTrace: stack);
+    debugPrint('❌ === REORDER PAGES ERROR: $e ===\n');
     return false;
   }
 }

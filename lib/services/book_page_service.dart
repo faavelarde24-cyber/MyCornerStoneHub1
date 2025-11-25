@@ -517,4 +517,38 @@ Future<BookPage?> createPage({
       return false;
     }
   }
+
+/// Batch update page numbers in a single transaction
+Future<bool> batchUpdatePageNumbers(List<Map<String, dynamic>> updates) async {
+  try {
+    debugPrint('📦 === BATCH UPDATE PAGE NUMBERS ===');
+    debugPrint('   Updates: ${updates.length} pages');
+    
+    // Convert to format expected by RPC function
+    final pageUpdates = updates.map((update) => {
+      'page_id': int.parse(update['pageId']),
+      'page_number': update['pageNumber'],
+    }).toList();
+    
+    debugPrint('   Calling RPC function...');
+    
+    // ✅ SINGLE DATABASE CALL - All updates in one transaction
+    await _client.rpc('reorder_pages_batch', params: {
+      'page_updates': pageUpdates,
+    });
+    
+    debugPrint('   ✅ Batch update successful');
+    _logger.i('Batch updated ${updates.length} page numbers');
+    return true;
+  } on PostgrestException catch (e, stack) {
+    debugPrint('   ❌ Supabase RPC error: ${e.message}');
+    _logger.e('Error in batch update: ${e.message}', error: e, stackTrace: stack);
+    return false;
+  } catch (e, stack) {
+    debugPrint('   ❌ Error in batch update: $e');
+    _logger.e('Error in batch update: $e', error: e, stackTrace: stack);
+    return false;
+  }
+}
+
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import '../../../models/book_models.dart';
 import '../../../pages/book_creator/widgets/audio_player_widget.dart';
+import '../../../pages/book_creator/widgets/video_player_widget.dart';
 
 class PageContentWidget extends StatelessWidget {
   final BookPage page;
@@ -14,51 +15,56 @@ class PageContentWidget extends StatelessWidget {
     this.isBackside = false,
   });
 
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: Container(
-        color: isBackside
-            ? page.background.color.withValues(alpha: 0.9)
-            : page.background.color,
-        child: Stack(
-          children: [
-            // Background image (if any)
-            if (page.background.imageUrl != null)
-              Positioned.fill(
-                child: Opacity(
-                  opacity: isBackside ? 0.7 : 1.0,
-                  child: Image.network(
-                    page.background.imageUrl!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const SizedBox(),
-                  ),
+ @override
+Widget build(BuildContext context) {
+  return ClipRRect(
+    borderRadius: BorderRadius.circular(4),
+    child: Container(
+      color: isBackside
+          ? page.background.color.withValues(alpha: 0.9)
+          : page.background.color,
+      child: Stack(
+        children: [
+          // Background image (if any)
+          if (page.background.imageUrl != null)
+            Positioned.fill(
+              child: Opacity(
+                opacity: isBackside ? 0.7 : 1.0,
+                child: Image.network(
+                  page.background.imageUrl!,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => const SizedBox(),
                 ),
               ),
+            ),
 
-            // Page elements (text, images, shapes, etc.)
-            ...page.elements.map((element) {
-              return Positioned(
-                left: element.position.dx,
-                top: element.position.dy,
-                child: Transform.rotate(
-                  angle: element.rotation,
-                  child: Opacity(
-                    opacity: isBackside ? 0.6 : 1.0,
-                    child: IgnorePointer(
-                      child: _buildElementContent(element),
-                    ),
-                  ),
+          // Page elements (text, images, shapes, etc.)
+          ...page.elements.map((element) {
+            // ✅ CRITICAL: Allow interaction for audio and video elements
+            final isInteractive = element.type == ElementType.audio || 
+                                   element.type == ElementType.video;
+            
+            return Positioned(
+              left: element.position.dx,
+              top: element.position.dy,
+              child: Transform.rotate(
+                angle: element.rotation,
+                child: Opacity(
+                  opacity: isBackside ? 0.6 : 1.0,
+                  child: isInteractive
+                      ? _buildElementContent(element) // ✅ Interactive elements (no IgnorePointer)
+                      : IgnorePointer(
+                          child: _buildElementContent(element), // ❌ Non-interactive elements
+                        ),
                 ),
-              );
-            }),
-          ],
-        ),
+              ),
+            );
+          }),
+        ],
       ),
-    );
-  }
-
+    ),
+  );
+}
   Widget _buildElementContent(PageElement element) {
     switch (element.type) {
       case ElementType.text:
@@ -118,45 +124,19 @@ class PageContentWidget extends StatelessWidget {
         );
 
       case ElementType.video:
-        return Container(
+        return SizedBox(
           width: element.size.width,
           height: element.size.height,
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey, width: 2),
-          ),
-          child: Stack(
-            children: [
-              if (element.properties['thumbnailUrl'] != null)
-                Image.network(
-                  element.properties['thumbnailUrl'],
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                )
-              else
-                const Center(
-                  child: Icon(Icons.videocam, size: 64, color: Colors.white70),
-                ),
-              Center(
-                child: Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.6),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.play_arrow, size: 40, color: Colors.white),
-                ),
-              ),
-            ],
+          child: VideoPlayerWidget(
+            videoUrl: element.properties['videoUrl'] ?? '',
+            thumbnailUrl: element.properties['thumbnailUrl'],
+            backgroundColor: const Color(0xFF000000),
+            accentColor: const Color(0xFF3498DB),
           ),
         );
-
-      default:
-        return const SizedBox();
-    }
+            default:
+              return const SizedBox();
+            }
   }
 
   Alignment _getAlignment(TextAlign textAlign) {

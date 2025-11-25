@@ -15,8 +15,6 @@ import 'widgets/dashboard_drawer.dart';
 import '../../utils/role_redirect.dart';
 import '../../providers/auth_providers.dart';
 
-
-
 class BookDashboardPage extends ConsumerStatefulWidget {
   const BookDashboardPage({super.key});
 
@@ -158,12 +156,13 @@ class _BookDashboardPageState extends ConsumerState<BookDashboardPage> {
                     final book = books[index];
                     final isSelected = index == _currentIndex;
 
-  debugPrint('📖 [PageView] Building book at index $index');
-  debugPrint('📖 [PageView] Book ID: ${book.id}');
-  debugPrint('📖 [PageView] Book ID length: ${book.id.length}');
-  debugPrint('📖 [PageView] Book title: ${book.title}');
-  debugPrint('📖 [PageView] Page size: ${book.pageSize.width}x${book.pageSize.height}');
-  debugPrint('📖 [PageView] Is selected: $isSelected');
+                    debugPrint('📖 [PageView] Building book at index $index');
+                    debugPrint('📖 [PageView] Book ID: ${book.id}');
+                    debugPrint('📖 [PageView] Book ID length: ${book.id.length}');
+                    debugPrint('📖 [PageView] Book title: ${book.title}');
+                    debugPrint('📖 [PageView] Page size: ${book.pageSize.width}x${book.pageSize.height}');
+                    debugPrint('📖 [PageView] Is selected: $isSelected');
+                    
                     return Book3DWidget(
                       book: book,
                       isSelected: isSelected,
@@ -242,8 +241,6 @@ class _BookDashboardPageState extends ConsumerState<BookDashboardPage> {
                         );
                       }
                     : null,
-                onGridView: _handleGridView,
-                onShare: () => _handleShare(selectedBook),
                 onPlay: () => _handleOpenBook(selectedBook),
               );
             },
@@ -475,84 +472,6 @@ class _BookDashboardPageState extends ConsumerState<BookDashboardPage> {
     );
   }
 
-  void _handleShare(Book? book) {
-    if (book == null) return;
-    
-    // Show share options dialog
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            const Icon(Icons.share, color: Color(0xFF3B82F6)),
-            const SizedBox(width: 12),
-            Text('Share "${book.title}"', style: AppTheme.headline),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.link),
-              title: const Text('Copy Link'),
-              onTap: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Share link - Coming Soon!'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.people),
-              title: const Text('Invite Collaborators'),
-              onTap: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Invite collaborators - Coming Soon!'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.qr_code),
-              title: const Text('Generate QR Code'),
-              onTap: () {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('QR Code - Coming Soon!'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _handleGridView() {
-    // Navigate to grid view of all books
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => _BooksGridView(themeMode: _themeMode),
-      ),
-    );
-  }
-
   void _handleSearch() {
     // Show search placeholder
     showDialog(
@@ -707,146 +626,6 @@ class _CreateBookDialogState extends State<_CreateBookDialog> {
           child: const Text('Next'),
         ),
       ],
-    );
-  }
-}
-
-// ========== BOOKS GRID VIEW ==========
-
-class _BooksGridView extends ConsumerWidget {
-  final AppThemeMode themeMode;
-
-  const _BooksGridView({required this.themeMode});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final booksAsync = ref.watch(userBooksProvider);
-
-    final backgroundColor = themeMode == AppThemeMode.dark
-        ? const Color(0xFF1A1A2E)
-        : themeMode == AppThemeMode.light
-            ? const Color(0xFFF5F5F5)
-            : const Color(0xFFD4E4F7);
-
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      appBar: AppBar(
-        title: const Text('All Books'),
-        backgroundColor: AppTheme.white,
-        foregroundColor: AppTheme.darkerText,
-      ),
-      body: booksAsync.when(
-        data: (books) {
-          if (books.isEmpty) {
-            return const Center(
-              child: Text('No books available'),
-            );
-          }
-
-          return GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              childAspectRatio: 0.7,
-              crossAxisSpacing: 16,
-              mainAxisSpacing: 16,
-            ),
-            itemCount: books.length,
-            itemBuilder: (context, index) {
-              final book = books[index];
-              return _GridBookCard(
-                book: book,
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => BookCreatorPage(bookId: book.id),
-                    ),
-                  );
-                },
-              );
-            },
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => Center(child: Text('Error: $error')),
-      ),
-    );
-  }
-}
-
-class _GridBookCard extends StatelessWidget {
-  final Book book;
-  final VoidCallback onTap;
-
-  const _GridBookCard({required this.book, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: AppTheme.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.1),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Book Cover
-            Expanded(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: book.theme?.primaryColor ?? Colors.blue[400],
-                  borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(12),
-                  ),
-                ),
-                child: Center(
-                  child: Text(
-                    book.title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-            ),
-            // Book Info
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    book.title,
-                    style: AppTheme.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${book.pageCount} pages',
-                    style: AppTheme.caption,
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

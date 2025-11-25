@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/language_service.dart';
 import '../../app_theme.dart';
-import '../../providers/book_providers.dart' as book_providers;
 import '../../models/book_models.dart';
 import '../auth/login_page.dart';
 import 'package:cornerstone_hub/pages/about_us_page.dart';
@@ -20,6 +19,13 @@ import 'package:cornerstone_hub/pages/book/widgets/books_list_dialog.dart';
 import '../../providers/auth_providers.dart';
 import '../../main.dart';
 import 'package:cornerstone_hub/pages/dashboard/book_dashboard_page.dart';
+import 'package:cornerstone_hub/pages/book_creator/choose_book_size_page.dart';
+import 'package:cornerstone_hub/models/book_size_type.dart';
+import 'dart:async'; // For Completer
+import 'package:flutter/foundation.dart' show kIsWeb; // For platform detection
+import 'package:cornerstone_hub/services/book_export_service.dart'; // For export functionality
+import 'package:cornerstone_hub/pages/dashboard/widgets/combine_books_page.dart'; // For combine books
+
 
 class ModernTeacherDashboard extends ConsumerStatefulWidget {
   const ModernTeacherDashboard({super.key});
@@ -160,16 +166,156 @@ void _showBooksList() {
   }
 }
 
-  void _createNewBook() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const BookCreatorPage(),
-      ),
-    ).then((_) {
-      ref.invalidate(book_providers.userBooksProvider);
-    });
+void _createNewBook() async {
+  debugPrint('🟢 === _createNewBook START ===');
+  
+  // Step 1: Show title/description dialog
+  final bookDetails = await showDialog<Map<String, String?>>(
+    context: context,
+    builder: (dialogContext) => _CreateBookDialog(),
+  );
+
+  // User cancelled the dialog
+  if (bookDetails == null) {
+    debugPrint('❌ Book creation cancelled at title dialog');
+    return;
   }
+
+  final title = bookDetails['title']!;
+  final description = bookDetails['description'];
+  
+  debugPrint('📝 Book title: $title');
+  debugPrint('📝 Description: ${description ?? "none"}');
+
+  // Step 2: Show size selection
+  debugPrint('📏 Opening size selection page...');
+  final selectedSize = await Navigator.push<BookSizeType>(
+    context,
+    MaterialPageRoute(
+      builder: (context) => ChooseBookSizePage(
+        title: title,
+        description: description,
+      ),
+    ),
+  );
+
+  debugPrint('🔙 Returned from ChooseBookSizePage');
+  debugPrint('Context mounted: $mounted');
+  debugPrint('Selected size: ${selectedSize?.label ?? "cancelled"}');
+
+  // User cancelled size selection
+  if (selectedSize == null) {
+    debugPrint('❌ Size selection cancelled');
+    return;
+  }
+
+  if (!mounted) return;
+
+  // Step 3: Create the book
+  debugPrint('⏳ Showing loading snackbar...');
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          ),
+          SizedBox(width: 16),
+          Text('Creating book...'),
+        ],
+      ),
+      behavior: SnackBarBehavior.floating,
+      duration: Duration(seconds: 30),
+    ),
+  );
+
+  debugPrint('📚 Calling bookActions.createBook...');
+  final bookActions = ref.read(bookActionsProvider);
+  final book = await bookActions.createBook(
+    title: title,
+    description: description,
+    sizeType: selectedSize,
+  );
+
+  debugPrint('📚 Book creation result: ${book != null ? book.id : "null"}');
+
+  if (!mounted) {
+    debugPrint('⚠️ Widget unmounted after book creation');
+    return;
+  }
+
+  // Hide loading indicator
+  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+  if (book != null) {
+    debugPrint('✅ Book created successfully: ${book.id}');
+    debugPrint('📄 Book has ${book.pageCount} pages');
+    
+    // Wait for provider to sync
+    debugPrint('⏳ Waiting for provider sync...');
+    await Future.delayed(const Duration(milliseconds: 800));
+    
+    debugPrint('🔄 Setting current book ID...');
+    ref.read(currentBookIdProvider.notifier).setBookId(book.id);
+    
+    await Future.delayed(const Duration(milliseconds: 200));
+    
+    // Refresh book list
+    ref.invalidate(userBooksProvider);
+    
+    // Navigate to book creator
+    debugPrint('🚀 Navigating to BookCreatorPage...');
+    
+    try {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) {
+            debugPrint('🏗️ Building BookCreatorPage...');
+            return BookCreatorPage(bookId: book.id);
+          },
+        ),
+      );
+      debugPrint('✅ Returned from BookCreatorPage');
+    } catch (e, stack) {
+      debugPrint('❌ Navigation error: $e');
+      debugPrint('Stack: $stack');
+    }
+    
+    // Show success message
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Book "${book.title}" created successfully!'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+    
+    debugPrint('🟢 === _createNewBook END (SUCCESS) ===');
+  } else {
+    debugPrint('❌ Book creation failed');
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to create book. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 5),
+        ),
+      );
+    }
+    
+    debugPrint('🟢 === _createNewBook END (FAILED) ===');
+  }
+}
 
   void _editBook(Book book) {
     Navigator.push(
@@ -231,6 +377,259 @@ void _showBooksList() {
         : 'Failed to duplicate book');
     }
   }
+
+  // ========== COMBINE BOOKS ==========
+void _showCombineBooksFlow(Book initialBook) {
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => CombineBooksPage(initialBook: initialBook),
+    ),
+  ).then((_) {
+    // Refresh books list when returning
+    ref.invalidate(userBooksProvider);
+  });
+}
+
+// ========== EXPORT PDF ==========
+Future<void> _handleExportPDF(Book book) async {
+  debugPrint('📄 === EXPORT PDF START ===');
+  debugPrint('Book: ${book.title}');
+  
+  // Create a completer to control dialog dismissal
+  final dialogCompleter = Completer<void>();
+  
+  // Show loading dialog
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) {
+      // Listen for completion signal
+      dialogCompleter.future.then((_) {
+        if (dialogContext.mounted) {
+          Navigator.of(dialogContext, rootNavigator: true).pop();
+        }
+      });
+      
+      return PopScope(
+        canPop: false,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                'Exporting to PDF...',
+                style: AppTheme.body1,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'This may take a moment',
+                style: AppTheme.caption,
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
+  try {
+    // Get pages
+    debugPrint('📄 Fetching pages...');
+    final pages = await ref.read(bookPagesProvider(book.id).future);
+    debugPrint('📄 Pages loaded: ${pages.length}');
+
+    if (pages.isEmpty) {
+      // Close loading dialog
+      if (!dialogCompleter.isCompleted) {
+        dialogCompleter.complete();
+      }
+      
+      // Wait for dialog to close
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      if (!mounted) return;
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot export: Book has no pages'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // Export to PDF
+    debugPrint('📄 Starting export...');
+    final exportService = BookExportService();
+    final pdfFile = await exportService.exportAsPDF(
+      book: book,
+      pages: pages,
+    );
+
+    debugPrint('📄 Export completed, closing dialog...');
+    
+    // ✅ Close loading dialog using completer
+    if (!dialogCompleter.isCompleted) {
+      dialogCompleter.complete();
+    }
+
+    // Wait for dialog animation to complete
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (!mounted) return;
+
+    if (pdfFile != null) {
+      debugPrint('✅ PDF exported successfully: ${pdfFile.path}');
+      
+      // Show success dialog
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green),
+              SizedBox(width: 12),
+              Text('PDF Exported!'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                kIsWeb 
+                    ? 'Your book has been downloaded as PDF.'
+                    : 'Your book has been exported as PDF.',
+                style: AppTheme.body1,
+              ),
+              if (!kIsWeb) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Location: ${pdfFile.path}',
+                  style: AppTheme.caption,
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            // Only show Share button on mobile/desktop
+            if (!kIsWeb)
+              ElevatedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await exportService.shareFile(pdfFile, book.title);
+                },
+                icon: const Icon(Icons.share),
+                label: const Text('Share'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF3B82F6),
+                ),
+              ),
+          ],
+        ),
+      );
+    } else {
+      debugPrint('❌ PDF export failed');
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to export PDF'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  } catch (e, stack) {
+    debugPrint('❌ Export error: $e');
+    debugPrint('Stack: $stack');
+    
+    // Ensure loading dialog is closed
+    if (!dialogCompleter.isCompleted) {
+      dialogCompleter.complete();
+    }
+    
+    // Wait for dialog to close
+    await Future.delayed(const Duration(milliseconds: 200));
+    
+    if (!mounted) return;
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Export error: $e'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
+
+// ========== EXPORT EPUB ==========
+Future<void> _handleExportEPUB(Book book) async {
+  debugPrint('📚 === EXPORT EPUB START ===');
+  debugPrint('Book: ${book.title}');
+  
+  // Show coming soon dialog for now
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      title: const Row(
+        children: [
+          Icon(Icons.info_outline, color: Color(0xFF3B82F6)),
+          SizedBox(width: 12),
+          Text('EPUB Export'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'EPUB export is coming soon!',
+            style: AppTheme.body1,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'For now, you can export as PDF. We\'re working on full EPUB support with proper formatting and metadata.',
+            style: AppTheme.caption,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('OK'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.pop(context);
+            _handleExportPDF(book);
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF3B82F6),
+          ),
+          child: const Text('Export as PDF Instead'),
+        ),
+      ],
+    ),
+  );
+}
 
   Color _getBackgroundColor() {
     switch (_themeMode) {
@@ -1142,57 +1541,184 @@ Widget build(BuildContext context) {
     }
   }
 
-  void _showBookOptions(Book book, LanguageService languageService) {
-    final sheetBg = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
-    final sheetText = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
-    
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: sheetBg,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => SafeArea(
+void _showBookOptions(Book book, LanguageService languageService) {
+  final sheetBg = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
+  final sheetText = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
+  
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: sheetBg,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (context) => SafeArea(
+      child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Header with book title
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(
+                    color: _isDarkMode ? Colors.grey[800]! : Colors.grey[200]!,
+                  ),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.menu_book, color: Color(0xFF6C5CE7)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Book Options',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                        ),
+                        Text(
+                          book.title,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Edit
             ListTile(
               leading: Icon(Icons.edit, color: sheetText),
-              title: Text(languageService.translate('edit'), style: AppTheme.body2.copyWith(color: sheetText)),
+              title: Text(
+                languageService.translate('edit'),
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _editBook(book);
               },
             ),
+            
+            // Duplicate
             ListTile(
               leading: Icon(Icons.copy, color: sheetText),
-              title: Text(languageService.translate('duplicate'), style: AppTheme.body2.copyWith(color: sheetText)),
+              title: Text(
+                languageService.translate('duplicate'),
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _duplicateBook(book);
               },
             ),
+            
+            Divider(color: _isDarkMode ? Colors.grey[800] : Colors.grey[200]),
+            
+            // ✅ NEW: Combine Books
+            ListTile(
+              leading: const Icon(Icons.merge_type, color: Color(0xFFF59E0B)),
+              title: Text(
+                'Combine Books',
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
+              subtitle: Text(
+                'Merge multiple books into one',
+                style: AppTheme.caption.copyWith(
+                  color: sheetText.withValues(alpha: 0.7),
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _showCombineBooksFlow(book);
+              },
+            ),
+            
+            Divider(color: _isDarkMode ? Colors.grey[800] : Colors.grey[200]),
+            
+            // ✅ NEW: Export as PDF
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf, color: Color(0xFFEF4444)),
+              title: Text(
+                'Export as PDF',
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
+              subtitle: Text(
+                'Download book as PDF file',
+                style: AppTheme.caption.copyWith(
+                  color: sheetText.withValues(alpha: 0.7),
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _handleExportPDF(book);
+              },
+            ),
+            
+            // ✅ NEW: Export as EPUB
+            ListTile(
+              leading: const Icon(Icons.book_outlined, color: Color(0xFF10B981)),
+              title: Text(
+                'Export as EPUB',
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
+              subtitle: Text(
+                'Download book as EPUB file',
+                style: AppTheme.caption.copyWith(
+                  color: sheetText.withValues(alpha: 0.7),
+                ),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _handleExportEPUB(book);
+              },
+            ),
+            
+            Divider(color: _isDarkMode ? Colors.grey[800] : Colors.grey[200]),
+            
+            // Share
             ListTile(
               leading: Icon(Icons.share, color: sheetText),
-              title: Text(languageService.translate('share'), style: AppTheme.body2.copyWith(color: sheetText)),
+              title: Text(
+                languageService.translate('share'),
+                style: AppTheme.body2.copyWith(color: sheetText),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _showComingSoon('${languageService.translate('share')} ${book.title}', languageService);
               },
             ),
+            
+            // Delete
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
-              title: Text(languageService.translate('delete'), style: AppTheme.body2.copyWith(color: Colors.red)),
+              title: Text(
+                languageService.translate('delete'),
+                style: AppTheme.body2.copyWith(color: Colors.red),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _deleteBook(book, languageService);
               },
             ),
+            
+            const SizedBox(height: 8),
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   void _showComingSoon(String feature, LanguageService languageService) {
     if (feature == languageService.translate('about_us')) {
@@ -1220,6 +1746,120 @@ Widget build(BuildContext context) {
         content: Text(message),
         behavior: SnackBarBehavior.floating,
       ),
+    );
+  }
+}
+
+// ========== CREATE BOOK DIALOG ==========
+class _CreateBookDialog extends StatefulWidget {
+  const _CreateBookDialog();
+
+  @override
+  State<_CreateBookDialog> createState() => _CreateBookDialogState();
+}
+
+class _CreateBookDialogState extends State<_CreateBookDialog> {
+  final _titleController = TextEditingController();
+  final _descriptionController = TextEditingController();
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      title: Text(
+        'Create New Book',
+        style: AppTheme.headline,
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _titleController,
+            decoration: InputDecoration(
+              labelText: 'Book Title',
+              labelStyle: AppTheme.body2,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              filled: true,
+              fillColor: AppTheme.chipBackground,
+            ),
+            style: AppTheme.body1,
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _descriptionController,
+            decoration: InputDecoration(
+              labelText: 'Description (optional)',
+              labelStyle: AppTheme.body2,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              filled: true,
+              fillColor: AppTheme.chipBackground,
+            ),
+            style: AppTheme.body1,
+            maxLines: 3,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            debugPrint('❌ Create book dialog cancelled');
+            Navigator.pop(context); // Returns null
+          },
+          child: Text(
+            'Cancel',
+            style: AppTheme.body1.copyWith(
+              color: AppTheme.lightText,
+            ),
+          ),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            if (_titleController.text.trim().isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Please enter a book title'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+              return;
+            }
+
+            final title = _titleController.text.trim();
+            final description = _descriptionController.text.trim().isNotEmpty
+                ? _descriptionController.text.trim()
+                : null;
+
+            debugPrint('✅ Book details submitted: $title');
+            
+            // Return the data to the parent
+            Navigator.pop(context, {
+              'title': title,
+              'description': description,
+            });
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFFBBF24),
+            foregroundColor: AppTheme.darkerText,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          child: const Text('Next'),
+        ),
+      ],
     );
   }
 }

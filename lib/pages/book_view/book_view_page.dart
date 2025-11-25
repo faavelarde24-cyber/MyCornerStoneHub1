@@ -26,6 +26,9 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
   late Animation<double> _flipAnimation;
   late Animation<double> _curlAnimation;
   late Animation<double> _shadowAnimation;
+  late ScrollController _horizontalController;
+  late ScrollController _verticalController;
+
   
   double _dragProgress = 0.0;
   bool _isDragging = false;
@@ -34,14 +37,15 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
   bool _isSinglePageMode = false;
   double _zoomLevel = 1.0;
 
-
-
   @override
   void initState() {
     super.initState();
     debugPrint('🟢 === BookViewPage initState START ===');
     
     _targetPageIndex = _currentPageIndex; // Initialize target to match current
+
+      _horizontalController = ScrollController();
+      _verticalController = ScrollController();
     
     _flipController = AnimationController(
       vsync: this,
@@ -88,6 +92,8 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
   void dispose() {
     debugPrint('🔴 BookViewPage disposing');
     _flipController.dispose();
+    _horizontalController.dispose();
+    _verticalController.dispose();
     super.dispose();
   }
 
@@ -110,20 +116,28 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
     
     // Spread 0 = cover only
     // Spreads 1+ = pairs of pages (1-2, 3-4, 5-6, etc.)
+    // Last spread = "End of Book" page
     final spreadsAfterCover = ((totalPages - 1) / 2).ceil();
-    final totalSpreads = 1 + spreadsAfterCover;
+    final totalSpreads = 1 + spreadsAfterCover + 1; // ✅ +1 for end page
     
-    debugPrint('📊 Total Pages: $totalPages → Total Spreads: $totalSpreads');
+    debugPrint('📊 Total Pages: $totalPages → Total Spreads (with end page): $totalSpreads');
     return totalSpreads;
   }
 
   (int? leftPageIndex, int? rightPageIndex) _getPagesForSpread(int spreadIndex) {
     final totalPages = _getTotalPages();
+    final totalSpreadCount = _getTotalSpreads();
     
     if (spreadIndex == 0) {
       // Cover spread: blank + page 0
       debugPrint('📖 Spread 0 (Cover): null + 0');
       return (null, 0);
+    }
+    
+    // ✅ Check if this is the "End of Book" spread (last spread)
+    if (spreadIndex == totalSpreadCount - 1) {
+      debugPrint('📖 Spread $spreadIndex: END OF BOOK PAGE');
+      return (-1, -1); // Special marker for end page
     }
     
     // For spread N (where N > 0):
@@ -200,10 +214,26 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
         _zoomLevel = initialZoom;
       });
       
-      debugPrint('✅ Initial Zoom Level Set: ${(_zoomLevel * 100).round()}%');
-      debugPrint('🔍 === _calculateInitialZoom END ===');
+      debugPrint('✅ Initial Zoom Level Set: ${(_zoomLevel * 51).round()}%');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_horizontalController.hasClients && _verticalController.hasClients) {
+        // Calculate center position
+        final maxHorizontal = _horizontalController.position.maxScrollExtent;
+        final maxVertical = _verticalController.position.maxScrollExtent;
+        
+        // Jump to center (adjust these values to change starting position)
+        _horizontalController.jumpTo(maxHorizontal * 0.5);
+        _verticalController.jumpTo(maxVertical * 0.4);
+        
+        debugPrint('📍 Scroll position set - H: ${maxHorizontal / 8}, V: ${maxVertical / 8}');
+      }
     });
-  }
+    
+    debugPrint('🔍 === _calculateInitialZoom END ===');
+  });
+}
+
+
 
   // === NAVIGATION METHODS ===
 
@@ -232,7 +262,7 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
     debugPrint('✅ Current spread index set to: $_currentPageIndex');
   }
 
-void _flipForward() {
+  void _flipForward() {
     debugPrint('➡️ === _flipForward START ===');
     debugPrint('Current Spread Index: $_currentPageIndex');
     debugPrint('Single Page Mode: $_isSinglePageMode');
@@ -298,7 +328,7 @@ void _flipForward() {
     debugPrint('➡️ === _flipForward END ===');
   }
 
-void _flipBackward() {
+  void _flipBackward() {
     debugPrint('⬅️ === _flipBackward START ===');
     debugPrint('Current Spread Index: $_currentPageIndex');
     
@@ -332,12 +362,13 @@ void _flipBackward() {
     
     debugPrint('⬅️ === _flipBackward END ===');
   }
+
   void _playPageFlipSound() {
     // Add a subtle haptic feedback for page flip completion
     HapticFeedback.mediumImpact();
   }
 
-void _snapBack() {
+  void _snapBack() {
     // Animate back to resting position with spring effect
     setState(() {
       _flipDirection = _dragProgress < 0 ? FlipDirection.forward : FlipDirection.backward;
@@ -387,70 +418,70 @@ void _snapBack() {
   }
 
   void _onHorizontalDragEnd(DragEndDetails details) {
-  debugPrint('👆 Drag END - Progress: $_dragProgress');
-  setState(() {
-    _isDragging = false;
-  });
+    debugPrint('👆 Drag END - Progress: $_dragProgress');
+    setState(() {
+      _isDragging = false;
+    });
 
-  if (_dragProgress.abs() > 0.3) {
-    // Threshold met - complete the flip
-    final maxLimit = _isSinglePageMode ? _getTotalPages() - 1 : _getTotalSpreads() - 1;
-    
-    if (_dragProgress < 0 && _currentPageIndex < maxLimit) {
-      debugPrint('✅ Flip forward triggered (drag: ${_dragProgress.toStringAsFixed(2)})');
+    if (_dragProgress.abs() > 0.3) {
+      // Threshold met - complete the flip
+      final maxLimit = _isSinglePageMode ? _getTotalPages() - 1 : _getTotalSpreads() - 1;
       
-      // Set target first
-      final nextIndex = _isSinglePageMode
-          ? (_currentPageIndex + 1).clamp(0, _getTotalPages() - 1)
-          : (_currentPageIndex + 1).clamp(0, _getTotalSpreads() - 1);
-      
-      setState(() {
-        _targetPageIndex = nextIndex;
-      });
-      
-      // Animate from current drag progress to completion
-      _flipController.forward(from: _dragProgress.abs()).then((_) {
+      if (_dragProgress < 0 && _currentPageIndex < maxLimit) {
+        debugPrint('✅ Flip forward triggered (drag: ${_dragProgress.toStringAsFixed(2)})');
+        
+        // Set target first
+        final nextIndex = _isSinglePageMode
+            ? (_currentPageIndex + 1).clamp(0, _getTotalPages() - 1)
+            : (_currentPageIndex + 1).clamp(0, _getTotalSpreads() - 1);
+        
         setState(() {
-          _currentPageIndex = _targetPageIndex;
-          _flipDirection = null;
-          _dragProgress = 0.0;
+          _targetPageIndex = nextIndex;
         });
-        _flipController.reset();
-        HapticFeedback.mediumImpact();
-        debugPrint('✅ Flip complete - now at: $_currentPageIndex');
-      });
-    } else if (_dragProgress > 0 && _currentPageIndex > 0) {
-      debugPrint('✅ Flip backward triggered (drag: ${_dragProgress.toStringAsFixed(2)})');
-      
-      // Set target first
-      final prevIndex = _isSinglePageMode
-          ? (_currentPageIndex - 1).clamp(0, _getTotalPages() - 1)
-          : (_currentPageIndex - 1).clamp(0, _getTotalSpreads() - 1);
-      
-      setState(() {
-        _targetPageIndex = prevIndex;
-      });
-      
-      _flipController.forward(from: _dragProgress.abs()).then((_) {
+        
+        // Animate from current drag progress to completion
+        _flipController.forward(from: _dragProgress.abs()).then((_) {
+          setState(() {
+            _currentPageIndex = _targetPageIndex;
+            _flipDirection = null;
+            _dragProgress = 0.0;
+          });
+          _flipController.reset();
+          HapticFeedback.mediumImpact();
+          debugPrint('✅ Flip complete - now at: $_currentPageIndex');
+        });
+      } else if (_dragProgress > 0 && _currentPageIndex > 0) {
+        debugPrint('✅ Flip backward triggered (drag: ${_dragProgress.toStringAsFixed(2)})');
+        
+        // Set target first
+        final prevIndex = _isSinglePageMode
+            ? (_currentPageIndex - 1).clamp(0, _getTotalPages() - 1)
+            : (_currentPageIndex - 1).clamp(0, _getTotalSpreads() - 1);
+        
         setState(() {
-          _currentPageIndex = _targetPageIndex;
-          _flipDirection = null;
-          _dragProgress = 0.0;
+          _targetPageIndex = prevIndex;
         });
-        _flipController.reset();
-        HapticFeedback.mediumImpact();
-        debugPrint('✅ Flip complete - now at: $_currentPageIndex');
-      });
+        
+        _flipController.forward(from: _dragProgress.abs()).then((_) {
+          setState(() {
+            _currentPageIndex = _targetPageIndex;
+            _flipDirection = null;
+            _dragProgress = 0.0;
+          });
+          _flipController.reset();
+          HapticFeedback.mediumImpact();
+          debugPrint('✅ Flip complete - now at: $_currentPageIndex');
+        });
+      } else {
+        debugPrint('⚠️ Cannot flip (boundary reached)');
+        _snapBack();
+      }
     } else {
-      debugPrint('⚠️ Cannot flip (boundary reached)');
+      // Threshold not met - snap back with spring animation
+      debugPrint('⚠️ Drag threshold not met (${_dragProgress.toStringAsFixed(2)}), snapping back');
       _snapBack();
     }
-  } else {
-    // Threshold not met - snap back with spring animation
-    debugPrint('⚠️ Drag threshold not met (${_dragProgress.toStringAsFixed(2)}), snapping back');
-    _snapBack();
   }
-}
 
   void _handleKeyPress(KeyEvent event) {
     if (event is! KeyDownEvent) return;
@@ -588,35 +619,46 @@ void _snapBack() {
     
     debugPrint('📏 Page Dimensions: $pageWidth x $pageHeight');
 
-int? leftPageIndex;
-int? rightPageIndex;
+    int? leftPageIndex;
+    int? rightPageIndex;
 
-// CRITICAL: During animation, show TARGET spread (destination)
-// This way the page flips away to reveal what's underneath
-final displayIndex = (_flipController.isAnimating || _isDragging)
-    ? _targetPageIndex
-    : _currentPageIndex;
+    // CRITICAL: During animation, show TARGET spread (destination)
+    // This way the page flips away to reveal what's underneath
+    final displayIndex = (_flipController.isAnimating || _isDragging)
+        ? _targetPageIndex
+        : _currentPageIndex;
 
-debugPrint('🎯 Display Index: $displayIndex (Animating: ${_flipController.isAnimating}, Target: $_targetPageIndex, Current: $_currentPageIndex)');
+    debugPrint('🎯 Display Index: $displayIndex (Animating: ${_flipController.isAnimating}, Target: $_targetPageIndex, Current: $_currentPageIndex)');
 
-if (_isSinglePageMode) {
-  // Single page mode: just show display page
-  leftPageIndex = null;
-  rightPageIndex = displayIndex < pages.length ? displayIndex : null;
-  debugPrint('📖 Single Page Mode - Page $displayIndex');
-} else {
-  // Two-page spread mode: use helper method with display index
-  final (left, right) = _getPagesForSpread(displayIndex);
-  leftPageIndex = left;
-  rightPageIndex = right;
-}
+    if (_isSinglePageMode) {
+      // Single page mode: just show display page
+      leftPageIndex = null;
+      rightPageIndex = displayIndex < pages.length ? displayIndex : null;
+      debugPrint('📖 Single Page Mode - Page $displayIndex');
+    } else {
+      // Two-page spread mode: use helper method with display index
+      final (left, right) = _getPagesForSpread(displayIndex);
+      leftPageIndex = left;
+      rightPageIndex = right;
+      
+      // ✅ Check for end of book page
+      if (left == -1 && right == -1) {
+        debugPrint('📖 Showing END OF BOOK page');
+        leftPageIndex = -1; // Special marker
+        rightPageIndex = -1; // Special marker
+      }
+    }
 
-    final leftPage = leftPageIndex != null && leftPageIndex < pages.length 
+    // ✅ Handle end of book page
+    final leftPage = (leftPageIndex != null && leftPageIndex >= 0 && leftPageIndex < pages.length)
         ? pages[leftPageIndex] 
         : null;
-    final rightPage = rightPageIndex != null && rightPageIndex < pages.length 
+    final rightPage = (rightPageIndex != null && rightPageIndex >= 0 && rightPageIndex < pages.length)
         ? pages[rightPageIndex] 
         : null;
+
+    // ✅ Check if we're showing the end page
+    final isEndOfBookPage = leftPageIndex == -1 && rightPageIndex == -1;
 
     debugPrint('📄 Left Page: ${leftPage != null ? "Page $leftPageIndex" : "null"}');
     debugPrint('📄 Right Page: ${rightPage != null ? "Page $rightPageIndex" : "null"}');
@@ -644,13 +686,15 @@ if (_isSinglePageMode) {
     
     debugPrint('🎨 === _buildBookCanvas END ===');
 
-    return Container(
-      color: _isDarkMode ? const Color(0xFF2C3440) : const Color(0xFFE5E5E5),
-      child: Center(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.vertical,
+return Container(
+  color: _isDarkMode ? const Color(0xFF2C3440) : const Color(0xFFE5E5E5),
+  child: Center(
+    child: SingleChildScrollView(
+      controller: _horizontalController,  
+      scrollDirection: Axis.horizontal,
+      child: SingleChildScrollView(
+        controller: _verticalController,  
+        scrollDirection: Axis.vertical,
             child: Padding(
               padding: const EdgeInsets.all(60),
               child: GestureDetector(
@@ -685,6 +729,8 @@ if (_isSinglePageMode) {
                               pageHeight: pageHeight,
                               isSinglePageMode: _isSinglePageMode,
                               isFirstPage: isFirstSpread,
+                              isEndPage: isEndOfBookPage,
+                              onRestartBook: () => _goToPage(1),
                             ),
 
                             if (_flipDirection != null && (_flipController.isAnimating || _isDragging))
@@ -838,6 +884,7 @@ if (_isSinglePageMode) {
                               isSinglePageMode: true,
                               isFirstPage: false,
                               isBackside: false,
+                              onRestartBook: () => _goToPage(1),
                             ),
                             
                             // Gradient overlay for lighting effect
