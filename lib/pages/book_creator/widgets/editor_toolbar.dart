@@ -4,6 +4,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../providers/book_providers.dart';
 
 class EditorToolbar extends ConsumerWidget {
+
+  static final GlobalKey textButtonKey = GlobalKey();
+  static final GlobalKey imageButtonKey = GlobalKey();
+  static final GlobalKey audioButtonKey = GlobalKey();
+  static final GlobalKey videoButtonKey = GlobalKey();
+  static final GlobalKey backgroundButtonKey = GlobalKey();
+  static final GlobalKey shapeButtonKey = GlobalKey();
+  static final GlobalKey undoButtonKey = GlobalKey();
+  static final GlobalKey redoButtonKey = GlobalKey();
+  static final GlobalKey deleteButtonKey = GlobalKey();
+  static final GlobalKey gridButtonKey = GlobalKey();
+  static final GlobalKey pageNavigationKey = GlobalKey();
+  static final GlobalKey helpButtonKey = GlobalKey();
+
+
   final Color appBarColor;
   final Color textColor;
   final String bookId;
@@ -21,6 +36,8 @@ class EditorToolbar extends ConsumerWidget {
   final VoidCallback onToggleGrid;
   final bool gridEnabled;
   final VoidCallback onBackgroundSettings;
+  final VoidCallback onShowHelp;
+
 
   const EditorToolbar({
     super.key,
@@ -41,6 +58,7 @@ class EditorToolbar extends ConsumerWidget {
     required this.onToggleGrid,
     required this.gridEnabled,
     required this.onBackgroundSettings,
+    required this.onShowHelp,
   });
 
   @override
@@ -59,6 +77,7 @@ class EditorToolbar extends ConsumerWidget {
         children: [
           // Add Content Section
           _buildToolbarButton(
+            key: EditorToolbar.textButtonKey,
             icon: Icons.text_fields,
             label: 'Text',
             onPressed: onAddText,
@@ -66,6 +85,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.imageButtonKey,
             icon: Icons.image,
             label: 'Image',
             onPressed: onAddImage,
@@ -73,6 +93,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.shapeButtonKey, 
             icon: Icons.crop_square,
             label: 'Shape',
             onPressed: onAddShape,
@@ -80,6 +101,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.audioButtonKey,
             icon: Icons.audiotrack,
             label: 'Audio',
             onPressed: onAddAudio,
@@ -87,6 +109,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.videoButtonKey,
             icon: Icons.videocam,
             label: 'Video',
             onPressed: onAddVideo,
@@ -97,6 +120,7 @@ class EditorToolbar extends ConsumerWidget {
           
           // Edit Section
           _buildToolbarButton(
+            key: EditorToolbar.undoButtonKey,
             icon: Icons.undo,
             label: 'Undo',
             onPressed: canUndo ? onUndo : null,
@@ -104,6 +128,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.redoButtonKey,
             icon: Icons.redo,
             label: 'Redo',
             onPressed: canRedo ? onRedo : null,
@@ -111,6 +136,7 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.deleteButtonKey,
             icon: Icons.delete,
             label: 'Delete',
             onPressed: hasSelectedElement ? onDelete : null,
@@ -121,6 +147,7 @@ class EditorToolbar extends ConsumerWidget {
           
           // View Settings
           _buildToolbarButton(
+            key: EditorToolbar.gridButtonKey,
             icon: gridEnabled ? Icons.grid_on : Icons.grid_off,
             label: 'Grid',
             onPressed: onToggleGrid,
@@ -128,37 +155,50 @@ class EditorToolbar extends ConsumerWidget {
           ),
           const SizedBox(width: 4),
           _buildToolbarButton(
+            key: EditorToolbar.backgroundButtonKey,
             icon: Icons.palette,
             label: 'Background',
             onPressed: onBackgroundSettings,
             textColor: textColor,
           ),
           
+          // ✅ NEW: Add Help Button Here
+          const SizedBox(width: 4),
+          _buildToolbarButton(
+            key: EditorToolbar.helpButtonKey,
+            icon: Icons.help_outline,
+            label: 'Help',
+            onPressed: onShowHelp,
+            textColor: const Color(0xFF10B981), // Green color for help
+          ),
+
           const Spacer(),
           
-          // Page Navigation
           pagesAsync.when(
-            data: (pages) => Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back_ios, size: 18),
-                  onPressed: pageIndex > 0
-                      ? () => ref.read(currentPageIndexProvider.notifier).setPageIndex(pageIndex - 1)
-                      : null,
-                  tooltip: 'Previous Page',
-                ),
-                Text(
-                  'Page ${pageIndex + 1} of ${pages.length}',
-                  style: TextStyle(color: textColor, fontWeight: FontWeight.w500),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.arrow_forward_ios, size: 18),
-                  onPressed: pageIndex < pages.length - 1
-                      ? () => ref.read(currentPageIndexProvider.notifier).setPageIndex(pageIndex + 1)
-                      : null,
-                  tooltip: 'Next Page',
-                ),
-              ],
+            data: (pages) => Container(
+              key: EditorToolbar.pageNavigationKey, // ✅ ADD THIS
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_ios, size: 18),
+                    onPressed: pageIndex > 0
+                        ? () => ref.read(currentPageIndexProvider.notifier).setPageIndex(pageIndex - 1)
+                        : null,
+                    tooltip: 'Previous Page',
+                  ),
+                  Text(
+                    'Page ${pageIndex + 1} of ${pages.length}',
+                    style: TextStyle(color: textColor, fontWeight: FontWeight.w500),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward_ios, size: 18),
+                    onPressed: pageIndex < pages.length - 1
+                        ? () => ref.read(currentPageIndexProvider.notifier).setPageIndex(pageIndex + 1)
+                        : null,
+                    tooltip: 'Next Page',
+                  ),
+                ],
+              ),
             ),
             loading: () => const CircularProgressIndicator(),
             error: (_, _) => const Text('Error'),
@@ -168,33 +208,35 @@ class EditorToolbar extends ConsumerWidget {
     );
   }
 
-  Widget _buildToolbarButton({
-    required IconData icon,
-    required String label,
-    VoidCallback? onPressed,
-    required Color textColor,
-  }) {
-    return Tooltip(
-      message: label,
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: textColor, size: 24),
-              const SizedBox(height: 2),
-              Text(
-                label,
-                style: TextStyle(fontSize: 10, color: textColor),
-              ),
-            ],
-          ),
+Widget _buildToolbarButton({
+  required IconData icon,
+  required String label,
+  VoidCallback? onPressed,
+  required Color textColor,
+  Key? key, // ✅ ADD THIS PARAMETER
+}) {
+  return Tooltip(
+    message: label,
+    child: InkWell(
+      key: key, // ✅ ADD THIS LINE
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: textColor, size: 24),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: TextStyle(fontSize: 10, color: textColor),
+            ),
+          ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

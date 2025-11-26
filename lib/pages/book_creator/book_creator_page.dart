@@ -23,7 +23,16 @@
   import 'package:video_player/video_player.dart';
   import 'widgets/audio_player_widget.dart';
   import '../book_view/book_view_page.dart';
+  import 'widgets/onboarding_guide.dart';
+  import 'package:cornerstone_hub/services/preference_service.dart';
+  import 'widgets/page_content_wizard.dart';
 
+
+class BookCreatorAppBarKeys {
+  static final GlobalKey saveButtonKey = GlobalKey();
+  static final GlobalKey previewButtonKey = GlobalKey();
+  static final GlobalKey settingsButtonKey = GlobalKey();
+}
 
   class BookCreatorPage extends ConsumerStatefulWidget {
     final String? bookId;
@@ -35,6 +44,7 @@
   }
 
   class _BookCreatorPageState extends ConsumerState<BookCreatorPage> {
+
     bool _isDarkMode = false;
     bool _isLoading = true;
     bool _isSaving = false;
@@ -49,6 +59,9 @@
       // 🚀 NEW: Track which element is actively being edited
     String? _activelyEditingElementId;
     Timer? _editingTimeoutTimer;
+
+    bool _showOnboardingGuide = false;
+    bool _showPageContentWizard = false;
 
 
     
@@ -346,6 +359,21 @@
         
         debugPrint('✅ Initialization complete, setting loading to false');
         setState(() => _isLoading = false);
+
+                // ✅ NEW: Check if we should show onboarding guide
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          final prefs = PreferencesService();
+          await prefs.init(); // ✅ Initialize singleton first
+          final shouldShowGuide = !(await prefs.hasCompletedOnboarding());
+          
+          debugPrint('Should show onboarding guide: $shouldShowGuide');
+          
+          if (shouldShowGuide && mounted) {
+            setState(() {
+              _showOnboardingGuide = true;
+            });
+          }
+        });
         
       } else {
         // New book should be created from dashboard with size already selected
@@ -2597,106 +2625,193 @@
       }
     }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(color: Colors.orange),
-        ),
-      );
-    }
+ @override
+Widget build(BuildContext context) {
+  if (_isLoading) {
+    return const Scaffold(
+      body: Center(
+        child: CircularProgressIndicator(color: Colors.orange),
+      ),
+    );
+  }
 
-    final bookId = ref.watch(currentBookIdProvider);
-    if (bookId == null) {
-      return Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, size: 64, color: Colors.red),
-              const SizedBox(height: 16),
-              Text(_errorMessage ?? 'Failed to create book'),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Go Back'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final backgroundColor = _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite;
-    final appBarColor = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
-    final textColor = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
-
-    return KeyboardListener(
-      focusNode: FocusNode()..requestFocus(),
-      autofocus: true,
-      onKeyEvent: _handleKeyPress,
-      child: Scaffold(
-        backgroundColor: backgroundColor,
-        appBar: _buildAppBar(appBarColor, textColor, bookId),
-        body: Column(
+  final bookId = ref.watch(currentBookIdProvider);
+  if (bookId == null) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            EditorToolbar(
-              appBarColor: appBarColor,
-              textColor: textColor,
-              bookId: bookId,
-              onAddText: _addTextElement,
-              onAddImage: _addImageElement,
-              onAddShape: _addShapeElement,
-              onAddAudio: _addAudioElement,
-              onAddVideo: _addVideoElement,
-              onDelete: _selectedElementId != null ? () => _deleteElement(_selectedElementId!) : null,
-              onUndo: _undoRedoManager.canUndo ? _undo : null,
-              onRedo: _undoRedoManager.canRedo ? _redo : null,
-              hasSelectedElement: _selectedElementId != null,
-              canUndo: _undoRedoManager.canUndo,
-              canRedo: _undoRedoManager.canRedo,
-              onToggleGrid: () => setState(() => _gridEnabled = !_gridEnabled),
-              gridEnabled: _gridEnabled,
-              onBackgroundSettings: _showBackgroundSettings,
-            ),
-            Expanded(
-              child: Row(
-                children: [
-                  PagesPanel(
-                    panelColor: appBarColor,
-                    textColor: textColor,
-                    bookId: bookId,
-                  ),
-                  Expanded(
-                    child: _buildEditorArea(bookId),
-                  ),
-                  RepaintBoundary(
-          child: PropertiesPanel(
-            bookId: bookId,
-            selectedElementId: _selectedElementId,
-            panelColor: appBarColor,
-            textColor: textColor,
-            localElementCache: _localElementCache,
-            onUpdateTextStyle: _updateTextStyle,
-            onUpdateTextAlign: _updateTextAlign,
-            onUpdateLineHeight: _updateLineHeight,
-            onUpdateShadows: _updateShadows,
-            onEditText: _editTextElement,
-            onElementSelected: (id) => setState(() => _selectedElementId = id),
-            onLayerOrderChanged: (newOrder) {
-              _showSnackBar('Layer order updated');
-                      },
-                    ),
-                  ),
-                ],
-              ),
+            const Icon(Icons.error_outline, size: 64, color: Colors.red),
+            const SizedBox(height: 16),
+            Text(_errorMessage ?? 'Failed to create book'),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Go Back'),
             ),
           ],
         ),
       ),
     );
   }
+
+  final backgroundColor = _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite;
+  final appBarColor = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
+  final textColor = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
+
+  return Stack(
+    children: [
+      // Main editor interface
+      KeyboardListener(
+        focusNode: FocusNode()..requestFocus(),
+        autofocus: true,
+        onKeyEvent: _handleKeyPress,
+        child: Scaffold(
+          backgroundColor: backgroundColor,
+          appBar: _buildAppBar(appBarColor, textColor, bookId),
+          body: Column(
+            children: [
+              EditorToolbar(
+                appBarColor: appBarColor,
+                textColor: textColor,
+                bookId: bookId,
+                onAddText: _addTextElement,
+                onAddImage: _addImageElement,
+                onAddShape: _addShapeElement,
+                onAddAudio: _addAudioElement,
+                onAddVideo: _addVideoElement,
+                onDelete: _selectedElementId != null ? () => _deleteElement(_selectedElementId!) : null,
+                onUndo: _undoRedoManager.canUndo ? _undo : null,
+                onRedo: _undoRedoManager.canRedo ? _redo : null,
+                hasSelectedElement: _selectedElementId != null,
+                canUndo: _undoRedoManager.canUndo,
+                canRedo: _undoRedoManager.canRedo,
+                onToggleGrid: () => setState(() => _gridEnabled = !_gridEnabled),
+                gridEnabled: _gridEnabled,
+                onBackgroundSettings: _showBackgroundSettings,
+                onShowHelp: () {
+                setState(() {
+                  _showPageContentWizard = true;
+                });
+},
+              ),
+              Expanded(
+                child: Row(
+                  children: [
+                    PagesPanel(
+                      panelColor: appBarColor,
+                      textColor: textColor,
+                      bookId: bookId,
+                    ),
+                    Expanded(
+                      child: _buildEditorArea(bookId),
+                    ),
+                    RepaintBoundary(
+                      child: PropertiesPanel(
+                        bookId: bookId,
+                        selectedElementId: _selectedElementId,
+                        panelColor: appBarColor,
+                        textColor: textColor,
+                        localElementCache: _localElementCache,
+                        onUpdateTextStyle: _updateTextStyle,
+                        onUpdateTextAlign: _updateTextAlign,
+                        onUpdateLineHeight: _updateLineHeight,
+                        onUpdateShadows: _updateShadows,
+                        onEditText: _editTextElement,
+                        onElementSelected: (id) => setState(() => _selectedElementId = id),
+                        onLayerOrderChanged: (newOrder) {
+                          _showSnackBar('Layer order updated');
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      
+      // ✅ NEW: Onboarding Guide Overlay
+      if (_showOnboardingGuide)
+        OnboardingGuide(
+          onComplete: () async {
+            final prefs = PreferencesService();
+            await prefs.init();
+            await prefs.markOnboardingComplete();
+            setState(() {
+              _showOnboardingGuide = false;
+              // Now show the page content wizard
+              _showPageContentWizard = true;
+            });
+          },
+          onSkip: () async {
+            final prefs = PreferencesService();
+            await prefs.init();
+            await prefs.markOnboardingComplete();
+            setState(() {
+              _showOnboardingGuide = false;
+            });
+          },
+        ),
+      
+if (_showPageContentWizard)
+  PageContentWizard(
+    onComplete: () async {
+      final prefs = PreferencesService();
+      await prefs.init();
+      await prefs.updateWizardLastUsed();
+      setState(() {
+        _showPageContentWizard = false;
+      });
+    },
+    onSkip: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+    },
+    // ✅ ADD THESE MISSING REQUIRED CALLBACKS
+    onAddText: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _addTextElement();
+    },
+    onAddImage: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _addImageElement();
+    },
+    onAddShape: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _addShapeElement();
+    },
+    onAddAudio: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _addAudioElement();
+    },
+    onAddVideo: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _addVideoElement();
+    },
+    onChangeBackground: () {
+      setState(() {
+        _showPageContentWizard = false;
+      });
+      _showBackgroundSettings();
+    },
+  ),
+    ],
+  );
+}
 
   PreferredSizeWidget _buildAppBar(Color appBarColor, Color textColor, String bookId) {
     final bookAsync = ref.watch(bookProvider(bookId));
@@ -2748,6 +2863,7 @@
           )
         else
           IconButton(
+            key: BookCreatorAppBarKeys.saveButtonKey,
             icon: const Icon(Icons.check),
             onPressed: () {
               _saveCurrentPage();
@@ -2756,6 +2872,7 @@
             tooltip: 'Save',
           ),
           IconButton(
+            key: BookCreatorAppBarKeys.previewButtonKey, 
             icon: const Icon(Icons.preview),
             onPressed: () => _handlePreview(),
             tooltip: 'Preview Book',
@@ -2766,6 +2883,7 @@
           tooltip: 'Toggle Theme',
         ),
         PopupMenuButton<String>(
+          key: BookCreatorAppBarKeys.settingsButtonKey,
           onSelected: (value) {
             switch (value) {
               case 'export':

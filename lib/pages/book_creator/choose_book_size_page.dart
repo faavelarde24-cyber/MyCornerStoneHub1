@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app_theme.dart';
 import '../../models/book_size_type.dart';
 import 'widgets/book_size_card.dart';
-
+import 'package:cornerstone_hub/services/preference_service.dart';
 class ChooseBookSizePage extends StatefulWidget {
   final String? title;
   final String? description;
@@ -20,6 +20,7 @@ class ChooseBookSizePage extends StatefulWidget {
 
 class _ChooseBookSizePageState extends State<ChooseBookSizePage> {
   BookSizeType? _selectedSize;
+  bool _isProcessing = false;
 
   @override
   void initState() {
@@ -144,55 +145,100 @@ class _ChooseBookSizePageState extends State<ChooseBookSizePage> {
                     ),
                   ),
 
-                  // Continue Button
-                  ElevatedButton(
-                    onPressed: _selectedSize == null
-                        ? null
-                        : () {
-                            debugPrint('✅ Continue button pressed');
-                            debugPrint('Selected size: ${_selectedSize!.label}');
-                            debugPrint('Dimensions: ${_selectedSize!.width}x${_selectedSize!.height}');
-                            debugPrint('Orientation: ${_selectedSize!.name}');
-                            debugPrint('Aspect Ratio: ${_selectedSize!.aspectRatio}');
-                            debugPrint('🔙 Popping back with selected size...');
-                            
-                            Navigator.pop(context, _selectedSize);
-                          },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF3B82F6),
-                      disabledBackgroundColor: const Color(0xFFE5E7EB),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 48,
-                        vertical: 16,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: _selectedSize == null ? 0 : 2,
+// Continue Button
+ElevatedButton(
+  onPressed: (_selectedSize == null || _isProcessing)
+      ? null
+      : () async {
+          debugPrint('✅ Continue button pressed');
+          debugPrint('Selected size: ${_selectedSize!.label}');
+          
+          setState(() => _isProcessing = true);
+          
+          try {
+            bool showWizard = true;
+            
+            final prefsCheck = Future(() async {
+              final prefs = PreferencesService();
+              await prefs.init();
+              final hasCompleted = await prefs.hasCompletedOnboarding();
+              debugPrint('Has completed onboarding: $hasCompleted');
+              return !hasCompleted;
+            });
+            
+            showWizard = await prefsCheck.timeout(
+              const Duration(seconds: 3),
+              onTimeout: () {
+                debugPrint('⚠️ PreferencesService timeout - defaulting to show wizard');
+                return true;
+              },
+            );
+            
+            if (!mounted) return;
+            
+            debugPrint('🔙 Popping back with ONLY size (not wizard status)');
+            
+            // ✅ CRITICAL FIX: Return only the BookSizeType
+            Navigator.pop(context, _selectedSize);
+            
+          } catch (e, stackTrace) {
+            debugPrint('❌ Error in Continue button: $e');
+            debugPrint('Stack trace: $stackTrace');
+            
+            if (!mounted) return;
+            
+            // ✅ Still return only the size
+            Navigator.pop(context, _selectedSize);
+          } finally {
+            if (mounted) {
+              setState(() => _isProcessing = false);
+            }
+          }
+        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    disabledBackgroundColor: const Color(0xFFE5E7EB),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 48,
+                      vertical: 16,
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'Continue',
-                          style: AppTheme.body1.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: _selectedSize == null
-                                ? const Color(0xFF9CA3AF)
-                                : Colors.white,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          Icons.arrow_forward,
-                          size: 20,
-                          color: _selectedSize == null
-                              ? const Color(0xFF9CA3AF)
-                              : Colors.white,
-                        ),
-                      ],
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
+                    elevation: (_selectedSize == null || _isProcessing) ? 0 : 2,
                   ),
+                  child: _isProcessing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'Continue',
+                              style: AppTheme.body1.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: (_selectedSize == null || _isProcessing)
+                                    ? const Color(0xFF9CA3AF)
+                                    : Colors.white,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.arrow_forward,
+                              size: 20,
+                              color: (_selectedSize == null || _isProcessing)
+                                  ? const Color(0xFF9CA3AF)
+                                  : Colors.white,
+                            ),
+                          ],
+                        ),
+                ),
                 ],
               ),
             ),

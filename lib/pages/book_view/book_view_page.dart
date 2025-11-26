@@ -842,6 +842,7 @@ return Container(
                     transform: Matrix4.identity()
                       ..setEntry(3, 2, perspective) // Perspective
                       ..rotateY(rotationY)
+                      // ignore: deprecated_member_use
                       ..translate(0.0, 0.0, curlIntensity * 50),
                     child: Container(
                       width: pageWidth,
