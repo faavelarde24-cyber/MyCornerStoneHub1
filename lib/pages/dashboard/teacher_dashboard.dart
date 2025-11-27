@@ -22,10 +22,11 @@ import 'package:cornerstone_hub/pages/dashboard/book_dashboard_page.dart';
 import 'package:cornerstone_hub/pages/book_creator/choose_book_size_page.dart';
 import 'package:cornerstone_hub/models/book_size_type.dart';
 import 'dart:async'; // For Completer
-import 'package:flutter/foundation.dart' show kIsWeb; // For platform detection
-import 'package:cornerstone_hub/services/book_export_service.dart'; // For export functionality
-import 'package:cornerstone_hub/pages/dashboard/widgets/combine_books_page.dart'; // For combine books
-
+import 'package:flutter/foundation.dart' show kIsWeb; 
+import 'package:cornerstone_hub/services/book_export_service.dart'; 
+import 'package:cornerstone_hub/pages/dashboard/widgets/combine_books_page.dart'; 
+import 'package:cornerstone_hub/pages/library/widgets/join_library_dialog.dart';
+import 'package:flutter/services.dart';
 
 class ModernTeacherDashboard extends ConsumerStatefulWidget {
   const ModernTeacherDashboard({super.key});
@@ -96,19 +97,14 @@ void _setThemeMode(AppThemeMode mode) {
   }
 
 void _showJoinLibraryDialog() {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: const Text('Join Library feature - Coming Soon!'),
-      backgroundColor: const Color(0xFF6C5CE7),
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 2),
-      action: SnackBarAction(
-        label: 'OK',
-        textColor: Colors.white,
-        onPressed: () {},
-      ),
-    ),
-  );
+  showDialog(
+    context: context,
+    builder: (context) => const JoinLibraryDialog(),
+  ).then((_) {
+    // Refresh libraries after dialog closes
+    ref.invalidate(userLibrariesProvider);
+    ref.invalidate(joinedLibrariesProvider);
+  });
 }
 
 void _showLibrariesList() {
@@ -1082,105 +1078,136 @@ Widget build(BuildContext context) {
     );
   }
 
-  Widget _buildLibrariesSection(
-    Color cardColor,
-    Color textColor,
-    Color subtitleColor,
-    LanguageService languageService,
-  ) {
-    final librariesAsync = ref.watch(userLibrariesProvider);
+Widget _buildLibrariesSection(
+  Color cardColor,
+  Color textColor,
+  Color subtitleColor,
+  LanguageService languageService,
+) {
+  final createdLibrariesAsync = ref.watch(userLibrariesProvider);
+  final joinedLibrariesAsync = ref.watch(joinedLibrariesProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              'My Libraries & Classes',
-              style: AppTheme.headline.copyWith(
-                color: textColor,
-                fontSize: 18,
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            'My Libraries & Classes',
+            style: AppTheme.headline.copyWith(
+              color: textColor,
+              fontSize: 18,
+            ),
+          ),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _showLibrariesList,
+                icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'View All',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _showJoinLibraryDialog,
+                icon: Icon(Icons.login, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'Join Library',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _showCreateLibraryDialog,
+                icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'Create Library',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      
+      createdLibrariesAsync.when(
+        data: (createdLibraries) {
+          return joinedLibrariesAsync.when(
+            data: (joinedLibraries) {
+              // ✅ FIXED: Deduplicate by library ID
+              final libraryMap = <String, Library>{};
+              
+              // Add created libraries first (prioritize creator view)
+              for (var library in createdLibraries) {
+                libraryMap[library.id] = library;
+              }
+              
+              // Add joined libraries (only if not already present)
+              for (var library in joinedLibraries) {
+                libraryMap.putIfAbsent(library.id, () => library);
+              }
+              
+              final allLibraries = libraryMap.values.toList();
+              
+              if (allLibraries.isEmpty) {
+                return _buildEmptyLibrariesState(cardColor, textColor, subtitleColor);
+              }
+              
+              return SizedBox(
+                height: 140,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: allLibraries.length.clamp(0, 5),
+                  itemBuilder: (context, index) {
+                    return _buildLibraryCard(
+                      allLibraries[index],
+                      cardColor,
+                      textColor,
+                      subtitleColor,
+                    );
+                  },
+                ),
+              );
+            },
+            loading: () => Container(
+              height: 140,
+              decoration: _getCardDecoration(),
+              child: const Center(
+                child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
               ),
             ),
-              Row(
-    children: [
-      TextButton.icon(
-        onPressed: _showLibrariesList,
-        icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'View All',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+            error: (error, _) => Center(
+              child: Text('Error loading joined libraries: $error'),
+            ),
+          );
+        },
+        loading: () => Container(
+          height: 140,
+          decoration: _getCardDecoration(),
+          child: const Center(
+            child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
+          ),
         ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-        ),
-      ),
-      const SizedBox(width: 8),
-      TextButton.icon(
-        onPressed: _showJoinLibraryDialog,
-        icon: Icon(Icons.login, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'Join Library',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-        ),
-      ),
-      const SizedBox(width: 8),
-      TextButton.icon(
-        onPressed: _showCreateLibraryDialog,
-        icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'Create Library',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+        error: (error, _) => Center(
+          child: Text('Error loading libraries: $error'),
         ),
       ),
     ],
-  ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        librariesAsync.when(
-          data: (libraries) {
-            if (libraries.isEmpty) {
-              return _buildEmptyLibrariesState(cardColor, textColor, subtitleColor);
-            }
-            
-            return SizedBox(
-              height: 140,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: libraries.length.clamp(0, 5),
-                itemBuilder: (context, index) {
-                  return _buildLibraryCard(
-                    libraries[index],
-                    cardColor,
-                    textColor,
-                    subtitleColor,
-                  );
-                },
-              ),
-            );
-          },
-          loading: () => Container(
-            height: 140,
-            decoration: _getCardDecoration(),
-            child: const Center(
-              child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
-            ),
-          ),
-          error: (error, _) => Center(
-            child: Text('Error loading libraries: $error'),
-          ),
-        ),
-      ],
-    );
-  }
+  );
+}
 
   Widget _buildEmptyLibrariesState(
     Color cardColor,
@@ -1214,91 +1241,441 @@ Widget build(BuildContext context) {
     );
   }
 
-  Widget _buildLibraryCard(
-    Library library,
-    Color cardColor,
-    Color textColor,
-    Color subtitleColor,
-  ) {
-    final colors = [Colors.blue, Colors.green, Colors.orange, Colors.purple, Colors.teal, Colors.pink];
-    final colorIndex = int.parse(library.id) % colors.length;
-    final color = colors[colorIndex];
+Widget _buildLibraryCard(
+  Library library,
+  Color cardColor,
+  Color textColor,
+  Color subtitleColor,
+) {
+  final colors = [Colors.blue, Colors.green, Colors.orange, Colors.purple, Colors.teal, Colors.pink];
+  final colorIndex = int.parse(library.id) % colors.length;
+  final color = colors[colorIndex];
 
-    return Container(
-      width: 160,
-      margin: const EdgeInsets.only(right: 12),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => LibraryDetailsPage(library: library),
+  return Container(
+    width: 160,
+    margin: const EdgeInsets.only(right: 12),
+    child: InkWell(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => LibraryDetailsPage(library: library),
+          ),
+        );
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        decoration: _getCardDecoration(),
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Top section with icon and name
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(Icons.library_books, size: 20, color: color),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    library.name,
+                    style: TextStyle(
+                      color: _getCardTextColor(),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
-          );
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: _getCardDecoration(),
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: color.withValues(alpha:0.15),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(Icons.library_books, size: 20, color: color),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      library.name,
-                      style: TextStyle(
-                        color: _getCardTextColor(),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+            const Spacer(),
+            
+            // Subject (if available)
+            if (library.subject != null) ...[
+              Text(
+                library.subject!,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: _getCardTextColor().withValues(alpha: 0.7),
+                  fontWeight: FontWeight.w500,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              const Spacer(),
-              if (library.subject != null) ...[
+              const SizedBox(height: 4),
+            ],
+            
+            // Bottom section with stats and menu button
+            Row(
+              children: [
+                // Stats
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(Icons.book, size: 12, color: _getCardTextColor().withValues(alpha: 0.7)),
+                      const SizedBox(width: 4),
+                      Text('${library.bookCount}', style: TextStyle(fontSize: 11, color: _getCardTextColor().withValues(alpha: 0.7))),
+                      const SizedBox(width: 12),
+                      Icon(Icons.people, size: 12, color: _getCardTextColor().withValues(alpha: 0.7)),
+                      const SizedBox(width: 4),
+                      Text('${library.memberCount}', style: TextStyle(fontSize: 11, color: _getCardTextColor().withValues(alpha: 0.7))),
+                    ],
+                  ),
+                ),
+                
+                // ✅ Menu button (bottom-right, matching book cards)
+                IconButton(
+                  onPressed: () => _showLibraryCardOptions(library),
+                  icon: Icon(Icons.more_vert, color: _getCardTextColor()),
+                  iconSize: 14,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 24,
+                    minHeight: 24,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+void _showLibraryCardOptions(Library library) {
+  final sheetBg = _isDarkMode ? AppTheme.dark_grey : AppTheme.white;
+  final sheetText = _isDarkMode ? AppTheme.white : AppTheme.darkerText;
+  
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: sheetBg,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (context) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Header with library info
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: _isDarkMode ? Colors.grey[800]! : Colors.grey[200]!,
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.library_books, color: Color(0xFF6C5CE7)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Library Options',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                      Text(
+                        library.name,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          // View Details
+          ListTile(
+            leading: Icon(Icons.visibility, color: sheetText),
+            title: Text(
+              'View Details',
+              style: AppTheme.body2.copyWith(color: sheetText),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => LibraryDetailsPage(library: library),
+                ),
+              );
+            },
+          ),
+          
+          // Share Invite Code
+          ListTile(
+            leading: const Icon(Icons.share, color: Color(0xFF3B82F6)),
+            title: Text(
+              'Share Invite Code',
+              style: AppTheme.body2.copyWith(color: sheetText),
+            ),
+            subtitle: Text(
+              'Share code with students',
+              style: AppTheme.caption.copyWith(
+                color: sheetText.withValues(alpha: 0.7),
+              ),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              _showShareLibraryDialog(library);
+            },
+          ),
+          
+          Divider(color: _isDarkMode ? Colors.grey[800] : Colors.grey[200]),
+          
+          // Delete Library
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.red),
+            title: Text(
+              'Delete Library',
+              style: AppTheme.body2.copyWith(color: Colors.red),
+            ),
+            subtitle: Text(
+              'Remove library and all members',
+              style: AppTheme.caption.copyWith(
+                color: sheetText.withValues(alpha: 0.7),
+              ),
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              _showDeleteLibraryConfirmation(library);
+            },
+          ),
+          
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
+}
+
+void _showShareLibraryDialog(Library library) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Row(
+        children: [
+          Icon(Icons.share, color: Color(0xFF3B82F6)),
+          SizedBox(width: 12),
+          Text('Share Invite Code'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Share this code with students to join "${library.name}":',
+            style: AppTheme.body1,
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.blue.shade200),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
                 Text(
-                  library.subject!,
+                  library.inviteCode,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 2,
+                    fontFamily: 'monospace',
+                    color: Colors.blue,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy, color: Colors.blue),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: library.inviteCode));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Row(
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.white),
+                            SizedBox(width: 12),
+                            Text('Invite code copied!'),
+                          ],
+                        ),
+                        backgroundColor: Colors.green,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> _showDeleteLibraryConfirmation(Library library) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Row(
+        children: [
+          Icon(Icons.warning, color: Colors.orange),
+          SizedBox(width: 12),
+          Text('Delete Library'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Are you sure you want to delete "${library.name}"?',
+            style: AppTheme.body1.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.red.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.red.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.red, size: 16),
+                    SizedBox(width: 8),
+                    Text(
+                      'This action cannot be undone',
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '• All members will be removed\n'
+                  '• All books will be unlinked\n'
+                  '• The invite code will be deleted',
                   style: TextStyle(
                     fontSize: 11,
-                    color: _getCardTextColor().withValues(alpha:0.7),
-                    fontWeight: FontWeight.w500,
+                    color: Colors.grey.shade700,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 4),
               ],
-              Row(
-                children: [
-                  Icon(Icons.book, size: 12, color: _getCardTextColor().withValues(alpha:0.7)),
-                  const SizedBox(width: 4),
-                  Text('${library.bookCount}', style: TextStyle(fontSize: 11, color: _getCardTextColor().withValues(alpha:0.7))),
-                  const SizedBox(width: 12),
-                  Icon(Icons.people, size: 12, color: _getCardTextColor().withValues(alpha:0.7)),
-                  const SizedBox(width: 4),
-                  Text('${library.memberCount}', style: TextStyle(fontSize: 11, color: _getCardTextColor().withValues(alpha:0.7))),
-                ],
-              ),
-            ],
+            ),
           ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
         ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, true),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+          ),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true) return;
+
+  // Show loading
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          ),
+          SizedBox(width: 16),
+          Text('Deleting library...'),
+        ],
+      ),
+      behavior: SnackBarBehavior.floating,
+      duration: Duration(seconds: 30),
+    ),
+  );
+
+  final actions = ref.read(libraryActionsProvider);
+  final success = await actions.deleteLibrary(library.id);
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              success ? Icons.check_circle : Icons.error_outline,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(success
+                  ? 'Library "${library.name}" deleted successfully'
+                  : 'Failed to delete library'),
+            ),
+          ],
+        ),
+        backgroundColor: success ? Colors.green : Colors.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
       ),
     );
   }
+}
 
   Widget _buildEmptyBooksState(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
     return Container(

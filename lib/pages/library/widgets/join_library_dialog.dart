@@ -37,25 +37,31 @@ class _JoinLibraryDialogState extends ConsumerState<JoinLibraryDialog> {
     if (mounted) {
       setState(() => _isJoining = false);
 
-      if (library != null) {
-        Navigator.pop(context);
-        
-        // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Successfully joined "${library.name}"'),
-            backgroundColor: Colors.green,
-          ),
-        );
+     if (library != null) {
+  // ✅ Invalidate providers BEFORE closing dialog
+  ref.invalidate(userLibrariesProvider);
+  ref.invalidate(joinedLibrariesProvider);
+  ref.invalidate(libraryProvider(library.id));
+  ref.invalidate(libraryMembersProvider(library.id));
+  
+  Navigator.pop(context);
+  
+  // Show success message
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Successfully joined "${library.name}"'),
+      backgroundColor: Colors.green,
+    ),
+  );
 
-        // Navigate to library details
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => LibraryDetailsPage(library: library),
-          ),
-        );
-      } else {
+  // Navigate to library details
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => LibraryDetailsPage(library: library),
+    ),
+  );
+} else {
         setState(() {
           _errorMessage = 'Invalid invite code. Please check and try again.';
         });

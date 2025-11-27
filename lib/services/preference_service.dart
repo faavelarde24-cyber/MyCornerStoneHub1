@@ -6,6 +6,7 @@ class PreferencesService {
   static const String _keyWizardLastUsed = 'wizard_last_used';
   static const String _keyWizardPagesCreated = 'wizard_pages_created';
   static const String _keyShowWizardTips = 'show_wizard_tips';
+  static const String _keyWizardExitConfirmation = 'wizard_exit_confirmation';
 
   // Singleton pattern
   static final PreferencesService _instance = PreferencesService._internal();
@@ -69,4 +70,15 @@ class PreferencesService {
     await init();
     await _prefs?.setBool(_keyShowWizardTips, show);
   }
+
+  Future<bool> shouldShowWizardExitConfirmation() async {
+  await init();
+  return _prefs?.getBool(_keyWizardExitConfirmation) ?? true;
+}
+
+Future<void> setShowWizardExitConfirmation(bool show) async {
+  await init();
+  await _prefs?.setBool(_keyWizardExitConfirmation, show);
+}
+
 }

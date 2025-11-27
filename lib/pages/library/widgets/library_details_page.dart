@@ -21,11 +21,17 @@ class _LibraryDetailsPageState extends ConsumerState<LibraryDetailsPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-  }
+@override
+void initState() {
+  super.initState();
+  _tabController = TabController(length: 2, vsync: this);
+  
+  // ✅ ADD THIS: Refresh members when page loads
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    ref.invalidate(libraryMembersProvider(widget.library.id));
+    ref.invalidate(libraryBooksProvider(widget.library.id));
+  });
+}
 
   @override
   void dispose() {
@@ -166,13 +172,60 @@ class _LibraryDetailsPageState extends ConsumerState<LibraryDetailsPage>
     );
   }
 
-  Widget _buildBooksTab() {
-    final booksAsync = ref.watch(libraryBooksProvider(widget.library.id));
+Widget _buildBooksTab() {
+  final booksAsync = ref.watch(libraryBooksProvider(widget.library.id));
 
-    return booksAsync.when(
-      data: (books) {
-        if (books.isEmpty) {
-          return Center(
+  return booksAsync.when(
+    data: (books) {
+      // ✅ ADD: Wrap in RefreshIndicator
+      return RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(libraryBooksProvider(widget.library.id));
+          ref.invalidate(libraryProvider(widget.library.id));
+          // Wait for refresh to complete
+          await ref.read(libraryBooksProvider(widget.library.id).future);
+        },
+        child: books.isEmpty
+            ? _buildEmptyBooksState()
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: books.length,
+                itemBuilder: (context, index) {
+                  return _buildBookCard(books[index]);
+                },
+              ),
+      );
+    },
+    loading: () => const Center(child: CircularProgressIndicator()),
+    error: (error, _) => Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+          const SizedBox(height: 16),
+          Text('Error loading books: $error'),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () {
+              ref.invalidate(libraryBooksProvider(widget.library.id));
+            },
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ✅ ADD: Empty state for books
+Widget _buildEmptyBooksState() {
+  return LayoutBuilder(
+    builder: (context, constraints) {
+      return SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -187,22 +240,12 @@ class _LibraryDetailsPageState extends ConsumerState<LibraryDetailsPage>
                 ),
               ],
             ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: books.length,
-          itemBuilder: (context, index) {
-            return _buildBookCard(books[index]);
-          },
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Error: $error')),
-    );
-  }
-
+          ),
+        ),
+      );
+    },
+  );
+}
   Widget _buildBookCard(LibraryBook book) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -269,25 +312,82 @@ class _LibraryDetailsPageState extends ConsumerState<LibraryDetailsPage>
       ),
     );
   }
+Widget _buildMembersTab() {
+  final membersAsync = ref.watch(libraryMembersProvider(widget.library.id));
 
-  Widget _buildMembersTab() {
-    final membersAsync = ref.watch(libraryMembersProvider(widget.library.id));
+  return membersAsync.when(
+    data: (members) {
+      // ✅ ADD: Wrap in RefreshIndicator
+      return RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(libraryMembersProvider(widget.library.id));
+          ref.invalidate(libraryProvider(widget.library.id));
+          // Wait for refresh to complete
+          await ref.read(libraryMembersProvider(widget.library.id).future);
+        },
+        child: members.isEmpty
+            ? _buildEmptyMembersState()
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: members.length,
+                itemBuilder: (context, index) {
+                  return _buildMemberCard(members[index]);
+                },
+              ),
+      );
+    },
+    loading: () => const Center(child: CircularProgressIndicator()),
+    error: (error, _) => Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.red),
+          const SizedBox(height: 16),
+          Text('Error loading members: $error'),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () {
+              ref.invalidate(libraryMembersProvider(widget.library.id));
+            },
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
-    return membersAsync.when(
-      data: (members) {
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: members.length,
-          itemBuilder: (context, index) {
-            return _buildMemberCard(members[index]);
-          },
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Error: $error')),
-    );
-  }
-
+// ✅ ADD: Empty state for members
+Widget _buildEmptyMembersState() {
+  return LayoutBuilder(
+    builder: (context, constraints) {
+      return SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.people_outline, size: 64, color: Colors.grey.shade400),
+                const SizedBox(height: 16),
+                const Text('No members yet'),
+                const SizedBox(height: 8),
+                Text(
+                  'Pull down to refresh',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
   Widget _buildMemberCard(LibraryMember member) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),

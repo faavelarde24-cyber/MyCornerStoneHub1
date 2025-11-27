@@ -249,21 +249,59 @@ class LibraryService {
     }
   }
 
-  /// Delete library
-  Future<bool> deleteLibrary(String libraryId) async {
-    try {
-      await _client
-          .from('Libraries')
-          .delete()
-          .eq('LibraryId', int.parse(libraryId));
-
-      _logger.i('Library deleted successfully: $libraryId');
-      return true;
-    } catch (e, stack) {
-      _logger.e('Error deleting library: $e', error: e, stackTrace: stack);
+/// Delete library
+Future<bool> deleteLibrary(String libraryId) async {
+  try {
+    _logger.i('🗑️ Attempting to delete library: $libraryId');
+    
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      _logger.e('No authenticated user found');
       return false;
     }
+
+    // Verify user is the creator before deleting
+    final library = await _client
+        .from('Libraries')
+        .select('CreatorId')
+        .eq('LibraryId', int.parse(libraryId))
+        .maybeSingle();
+
+    if (library == null) {
+      _logger.e('Library not found: $libraryId');
+      return false;
+    }
+
+    final userResponse = await _client
+        .from('Users')
+        .select('UsersId')
+        .eq('AuthId', userId)
+        .single();
+
+    final usersId = userResponse['UsersId'] as int;
+
+    if (library['CreatorId'] != usersId) {
+      _logger.e('User is not the creator of this library');
+      return false;
+    }
+
+    // Delete the library (CASCADE will handle members and books)
+    await _client
+        .from('Libraries')
+        .delete()
+        .eq('LibraryId', int.parse(libraryId));
+
+    _logger.i('✅ Library deleted successfully: $libraryId');
+    return true;
+  } on PostgrestException catch (e, stack) {
+    _logger.e('❌ Supabase error deleting library: ${e.message}', 
+      error: e, stackTrace: stack);
+    return false;
+  } catch (e, stack) {
+    _logger.e('❌ Error deleting library: $e', error: e, stackTrace: stack);
+    return false;
   }
+}
 
   /// Join library using invite code (uses database function)
   Future<Library?> joinLibrary(String inviteCode) async {

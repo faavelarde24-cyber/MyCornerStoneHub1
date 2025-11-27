@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../app_theme.dart';
 import '../../models/book_size_type.dart';
 import 'widgets/book_size_card.dart';
-import 'package:cornerstone_hub/services/preference_service.dart';
 class ChooseBookSizePage extends StatefulWidget {
   final String? title;
   final String? description;
@@ -156,23 +155,8 @@ ElevatedButton(
           setState(() => _isProcessing = true);
           
           try {
-            bool showWizard = true;
             
-            final prefsCheck = Future(() async {
-              final prefs = PreferencesService();
-              await prefs.init();
-              final hasCompleted = await prefs.hasCompletedOnboarding();
-              debugPrint('Has completed onboarding: $hasCompleted');
-              return !hasCompleted;
-            });
             
-            showWizard = await prefsCheck.timeout(
-              const Duration(seconds: 3),
-              onTimeout: () {
-                debugPrint('⚠️ PreferencesService timeout - defaulting to show wizard');
-                return true;
-              },
-            );
             
             if (!mounted) return;
             

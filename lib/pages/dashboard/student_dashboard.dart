@@ -21,10 +21,11 @@ import '../../providers/auth_providers.dart';
 import '../../main.dart';
 import 'package:cornerstone_hub/pages/book_creator/choose_book_size_page.dart';
 import 'package:cornerstone_hub/models/book_size_type.dart';
-import 'dart:async'; // For Completer
-import 'package:flutter/foundation.dart' show kIsWeb; // For platform detection
-import 'package:cornerstone_hub/services/book_export_service.dart'; // For export functionality
-import 'package:cornerstone_hub/pages/dashboard/widgets/combine_books_page.dart'; // For combine books
+import 'dart:async'; 
+import 'package:flutter/foundation.dart' show kIsWeb; 
+import 'package:cornerstone_hub/services/book_export_service.dart'; 
+import 'package:cornerstone_hub/pages/dashboard/widgets/combine_books_page.dart'; 
+import 'package:cornerstone_hub/pages/library/widgets/join_library_dialog.dart';
 
 class StudentDashboard extends ConsumerStatefulWidget {
   const StudentDashboard({super.key});
@@ -95,19 +96,14 @@ void _setThemeMode(AppThemeMode mode) {
   }
 
 void _showJoinLibraryDialog() {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: const Text('Join Library feature - Coming Soon!'),
-      backgroundColor: const Color(0xFF6C5CE7),
-      behavior: SnackBarBehavior.floating,
-      duration: const Duration(seconds: 2),
-      action: SnackBarAction(
-        label: 'OK',
-        textColor: Colors.white,
-        onPressed: () {},
-      ),
-    ),
-  );
+  showDialog(
+    context: context,
+    builder: (context) => const JoinLibraryDialog(),
+  ).then((_) {
+    // Refresh libraries after dialog closes
+    ref.invalidate(userLibrariesProvider);
+    ref.invalidate(joinedLibrariesProvider);
+  });
 }
 
 void _showLibrariesList() {
@@ -1074,105 +1070,136 @@ Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageServic
     );
   }
 
-  Widget _buildLibrariesSection(
-    Color cardColor,
-    Color textColor,
-    Color subtitleColor,
-    LanguageService languageService,
-  ) {
-    final librariesAsync = ref.watch(userLibrariesProvider);
+Widget _buildLibrariesSection(
+  Color cardColor,
+  Color textColor,
+  Color subtitleColor,
+  LanguageService languageService,
+) {
+  final createdLibrariesAsync = ref.watch(userLibrariesProvider);
+  final joinedLibrariesAsync = ref.watch(joinedLibrariesProvider);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
           Text(
-            'My Classes & Joined Libraries',
+            'My Libraries & Classes',
             style: AppTheme.headline.copyWith(
               color: textColor,
               fontSize: 18,
             ),
           ),
-              Row(
-    children: [
-      TextButton.icon(
-        onPressed: _showLibrariesList,
-        icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'View All',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-        ),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _showLibrariesList,
+                icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'View All',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _showJoinLibraryDialog,
+                icon: Icon(Icons.login, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'Join Library',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: _showCreateLibraryDialog,
+                icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                label: Text(
+                  'Create Library',
+                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
-      const SizedBox(width: 8),
-      TextButton.icon(
-        onPressed: _showJoinLibraryDialog,
-        icon: Icon(Icons.login, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'Join Library',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+      const SizedBox(height: 12),
+      
+      createdLibrariesAsync.when(
+        data: (createdLibraries) {
+          return joinedLibrariesAsync.when(
+            data: (joinedLibraries) {
+              // ✅ FIXED: Deduplicate by library ID
+              final libraryMap = <String, Library>{};
+              
+              // Add created libraries first (prioritize creator view)
+              for (var library in createdLibraries) {
+                libraryMap[library.id] = library;
+              }
+              
+              // Add joined libraries (only if not already present)
+              for (var library in joinedLibraries) {
+                libraryMap.putIfAbsent(library.id, () => library);
+              }
+              
+              final allLibraries = libraryMap.values.toList();
+              
+              if (allLibraries.isEmpty) {
+                return _buildEmptyLibrariesState(cardColor, textColor, subtitleColor);
+              }
+              
+              return SizedBox(
+                height: 140,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: allLibraries.length.clamp(0, 5),
+                  itemBuilder: (context, index) {
+                    return _buildLibraryCard(
+                      allLibraries[index],
+                      cardColor,
+                      textColor,
+                      subtitleColor,
+                    );
+                  },
+                ),
+              );
+            },
+            loading: () => Container(
+              height: 140,
+              decoration: _getCardDecoration(),
+              child: const Center(
+                child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
+              ),
+            ),
+            error: (error, _) => Center(
+              child: Text('Error loading joined libraries: $error'),
+            ),
+          );
+        },
+        loading: () => Container(
+          height: 140,
+          decoration: _getCardDecoration(),
+          child: const Center(
+            child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
+          ),
         ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-        ),
-      ),
-      const SizedBox(width: 8),
-      TextButton.icon(
-        onPressed: _showCreateLibraryDialog,
-        icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        label: Text(
-          'Create Library',
-          style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-        ),
-        style: TextButton.styleFrom(
-          foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+        error: (error, _) => Center(
+          child: Text('Error loading libraries: $error'),
         ),
       ),
     ],
-  ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        librariesAsync.when(
-          data: (libraries) {
-            if (libraries.isEmpty) {
-              return _buildEmptyLibrariesState(cardColor, textColor, subtitleColor);
-            }
-            
-            return SizedBox(
-              height: 140,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: libraries.length.clamp(0, 5),
-                itemBuilder: (context, index) {
-                  return _buildLibraryCard(
-                    libraries[index],
-                    cardColor,
-                    textColor,
-                    subtitleColor,
-                  );
-                },
-              ),
-            );
-          },
-          loading: () => Container(
-            height: 140,
-            decoration: _getCardDecoration(),
-            child: const Center(
-              child: CircularProgressIndicator(color: Color(0xFF6C5CE7)),
-            ),
-          ),
-          error: (error, _) => Center(
-            child: Text('Error loading libraries: $error'),
-          ),
-        ),
-      ],
-    );
-  }
+  );
+}
 
   Widget _buildEmptyLibrariesState(
     Color cardColor,

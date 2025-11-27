@@ -2636,6 +2636,8 @@ Widget build(BuildContext context) {
   }
 
   final bookId = ref.watch(currentBookIdProvider);
+  final bookAsync = ref.watch(bookProvider(bookId ?? ''));
+
   if (bookId == null) {
     return Scaffold(
       body: Center(
@@ -2758,6 +2760,11 @@ Widget build(BuildContext context) {
       
 if (_showPageContentWizard)
   PageContentWizard(
+    // ✅ NEW: Pass the book title here
+    initialBookTopic: bookAsync.maybeWhen(
+      data: (book) => book?.title ?? '',
+      orElse: () => '',
+    ),
     onComplete: () async {
       final prefs = PreferencesService();
       await prefs.init();
@@ -2771,7 +2778,6 @@ if (_showPageContentWizard)
         _showPageContentWizard = false;
       });
     },
-    // ✅ ADD THESE MISSING REQUIRED CALLBACKS
     onAddText: () {
       setState(() {
         _showPageContentWizard = false;

@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../models/book_models.dart';
 import '../../../providers/book_providers.dart';
+import 'wizard_exit_dialog.dart';
+import 'dart:async';
+
 
 /// Simplified Book Creator Wizard - Two-Step Process
 class PageContentWizard extends ConsumerStatefulWidget {
@@ -13,6 +16,7 @@ class PageContentWizard extends ConsumerStatefulWidget {
   final VoidCallback onAddAudio;
   final VoidCallback onAddVideo;
   final VoidCallback onChangeBackground;
+  final String initialBookTopic;
 
   const PageContentWizard({
     super.key,
@@ -24,6 +28,8 @@ class PageContentWizard extends ConsumerStatefulWidget {
     required this.onAddAudio,
     required this.onAddVideo,
     required this.onChangeBackground,
+    this.initialBookTopic = '',
+
   });
   @override
   ConsumerState<PageContentWizard> createState() => _PageContentWizardState();
@@ -35,34 +41,105 @@ class _PageContentWizardState extends ConsumerState<PageContentWizard>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
+
+// ✅ NEW: Local state for wizard-only changes
+List<BookPage> _localPages = [];
+Map<String, List<PageElement>> _localPageElements = {}; // pageId -> elements
+Map<String, PageBackground> _localPageBackgrounds = {}; // pageId -> background
+int _localCurrentPageIndex = 0;
+bool _hasUnsavedChanges = false;
+
+// ✅ NEW: Drag & resize state (copied from main editor)
+final Map<String, Offset> _elementOffsets = {};
+final Map<String, Size> _elementSizes = {};
+final Map<String, double> _elementRotations = {};
+String? _currentlyDraggingId;
+String? _currentlyResizingId;
+String? _currentlyRotatingId;
+String? _selectedElementId;
+
+// ✅ NEW: Drag state
+Offset? _dragStartGlobalMousePosition;
+Offset? _dragStartElementPosition;
+Offset? _dragMouseOffset;
+
+// ✅ NEW: Resize state
+Offset? _resizeStartMousePosition;
+Size? _resizeStartElementSize;
+Offset? _resizeStartElementPosition;
+
+
   // Wizard state
   int _currentStep = 0; // 0 = question, 1 = editing interface
   String _bookTopic = '';
   final TextEditingController _topicController = TextEditingController();
+  
+  // Track pending actions to apply when user finishes
+  final List<VoidCallback> _pendingActions = [];
 
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 400),
-      vsync: this,
-    );
+@override
+void initState() {
+  super.initState();
 
-    _fadeAnimation = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOut,
-    );
-
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.1),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeOut,
-    ));
-
-    _controller.forward();
+  if (widget.initialBookTopic.isNotEmpty) {
+    _bookTopic = widget.initialBookTopic;
+    _topicController.text = widget.initialBookTopic;
   }
+
+  _controller = AnimationController(
+    duration: const Duration(milliseconds: 400),
+    vsync: this,
+  );
+
+  _fadeAnimation = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+  );
+
+  _slideAnimation = Tween<Offset>(
+    begin: const Offset(0, 0.1),
+    end: Offset.zero,
+  ).animate(CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+  ));
+
+  _controller.forward();
+  
+  // ✅ NEW: Load pages into local state
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _loadPagesIntoLocalState();
+  });
+}
+
+
+void _loadPagesIntoLocalState() {
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) return;
+
+  final pagesAsync = ref.read(bookPagesProvider(bookId));
+  pagesAsync.when(
+    data: (pages) {
+      setState(() {
+        _localPages = List<BookPage>.from(pages);
+        
+        // Initialize local element and background maps
+        for (final page in pages) {
+          _localPageElements[page.id] = List<PageElement>.from(page.elements);
+          _localPageBackgrounds[page.id] = page.background;
+        }
+        
+        _localCurrentPageIndex = ref.read(currentPageIndexProvider);
+      });
+      
+      debugPrint('✅ Loaded ${pages.length} pages into wizard local state');
+    },
+    loading: () {},
+    error: (error, stack) {
+      debugPrint('❌ Error loading pages into wizard: $error');
+    },
+  );
+}
 
   @override
   void dispose() {
@@ -71,31 +148,138 @@ class _PageContentWizardState extends ConsumerState<PageContentWizard>
     super.dispose();
   }
 
-  void _goToEditingMode() {
-    if (_topicController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please tell us what your book is about!'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _bookTopic = _topicController.text.trim();
-      _currentStep = 1;
-    });
-
-    // Animate transition
-    _controller.forward(from: 0);
+void _goToEditingMode() async {
+  if (_topicController.text.trim().isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Please tell us what your book is about!'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+    return;
   }
 
+  final newTopic = _topicController.text.trim();
+  
+  // ✅ NEW: Update book title if it changed
+  if (newTopic != widget.initialBookTopic) {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId != null) {
+      // Show loading indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(width: 16),
+              Text('Updating book title...'),
+            ],
+          ),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      // Update the book title
+      final bookActions = ref.read(bookActionsProvider);
+      final success = await bookActions.updateBook(
+        bookId: bookId,
+        title: newTopic,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        
+if (success) {
+  debugPrint('📚 Title update successful - refreshing providers');
+  
+  // ✅ CRITICAL: Force immediate provider refresh
+  ref.invalidate(bookProvider(bookId));
+  ref.invalidate(userBooksProvider);
+  
+  // ✅ Wait for provider to rebuild with new data
+  await Future.delayed(const Duration(milliseconds: 500));
+  
+  // ✅ Force a read to ensure the provider has refreshed
+  try {
+    final updatedBook = await ref.read(bookProvider(bookId).future);
+    debugPrint('✅ Book title now: ${updatedBook?.title}');
+  } catch (e) {
+    debugPrint('⚠️ Error reading updated book: $e');
+  }
+  
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.white),
+            SizedBox(width: 12),
+            Text('Book title updated!'),
+          ],
+        ),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+} else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to update book title'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 2),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  setState(() {
+    _bookTopic = newTopic;
+    _currentStep = 1;
+  });
+
+  // Animate transition
+  _controller.forward(from: 0);
+}
   void _goBackToQuestion() {
     setState(() {
       _currentStep = 0;
     });
     _controller.forward(from: 0);
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.blue.shade700,
+      ),
+    );
+  }
+
+  void _applyPendingChangesAndComplete() {
+    // Apply all pending actions
+    for (final action in _pendingActions) {
+      action();
+    }
+    _pendingActions.clear();
+    
+    // Call the completion callback
+    widget.onComplete();
   }
 
   @override
@@ -723,77 +907,86 @@ Widget _buildEditingInterface() {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _buildElementButton(
-                  emoji: '📝',
-                  label: 'Add Text',
-                  description: 'Write titles, paragraphs, or lists',
-                  color: Colors.blue,
-                  onTap: () {
-                    // This will trigger the main editor's add text function
-                    // We need to close wizard and signal to add text
-                    widget.onComplete();
-                    // TODO: Add callback to trigger text addition
-                  },
-                ),
-                const SizedBox(height: 12),
+  _buildElementButton(
+    emoji: '📝',
+    label: 'Add Text',
+    description: 'Write titles, paragraphs, or lists',
+    color: Colors.blue,
+    onTap: () {
+      // ✅ Call the parent's add text function WITHOUT closing wizard
+      widget.onAddText();
+      _showSnackBar('Text element added!');
+    },
+  ),
+  const SizedBox(height: 12),
 
-                _buildElementButton(
-                  emoji: '🖼️',
-                  label: 'Add Image',
-                  description: 'Upload or search for pictures',
-                  color: Colors.green,
-                  onTap: () {
-                    widget.onComplete();
-                  },
-                ),
-                const SizedBox(height: 12),
+  _buildElementButton(
+    emoji: '🖼️',
+    label: 'Add Image',
+    description: 'Upload or search for pictures',
+    color: Colors.green,
+    onTap: () {
+      // ✅ Call the parent's add image function WITHOUT closing wizard
+      widget.onAddImage();
+      _showSnackBar('Adding image...');
+    },
+  ),
+  const SizedBox(height: 12),
 
-                _buildElementButton(
-                  emoji: '🎨',
-                  label: 'Add Shape',
-                  description: 'Circles, squares, and more',
-                  color: Colors.purple,
-                  onTap: () {
-                    widget.onComplete();
-                  },
-                ),
-                const SizedBox(height: 12),
+  _buildElementButton(
+    emoji: '🎨',
+    label: 'Add Shape',
+    description: 'Circles, squares, and more',
+    color: Colors.purple,
+    onTap: () {
+      // ✅ Call the parent's add shape function WITHOUT closing wizard
+      widget.onAddShape();
+      _showSnackBar('Choose a shape');
+    },
+  ),
+  const SizedBox(height: 12),
 
-                _buildElementButton(
-                  emoji: '🎵',
-                  label: 'Add Audio',
-                  description: 'Add music or narration',
-                  color: Colors.orange,
-                  onTap: () {
-                    widget.onComplete();
-                  },
-                ),
-                const SizedBox(height: 12),
+  _buildElementButton(
+    emoji: '🎵',
+    label: 'Add Audio',
+    description: 'Add music or narration',
+    color: Colors.orange,
+    onTap: () {
+      // ✅ Call the parent's add audio function WITHOUT closing wizard
+      widget.onAddAudio();
+      _showSnackBar('Adding audio...');
+    },
+  ),
+  const SizedBox(height: 12),
 
-                _buildElementButton(
-                  emoji: '🎬',
-                  label: 'Add Video',
-                  description: 'Include video clips',
-                  color: Colors.red,
-                  onTap: () {
-                    widget.onComplete();
-                  },
-                ),
+  _buildElementButton(
+    emoji: '🎬',
+    label: 'Add Video',
+    description: 'Include video clips',
+    color: Colors.red,
+    onTap: () {
+      // ✅ Call the parent's add video function WITHOUT closing wizard
+      widget.onAddVideo();
+      _showSnackBar('Adding video...');
+    },
+  ),
 
-                const SizedBox(height: 24),
-                const Divider(),
-                const SizedBox(height: 12),
+  const SizedBox(height: 24),
+  const Divider(),
+  const SizedBox(height: 12),
 
-                _buildElementButton(
-                  emoji: '🎨',
-                  label: 'Change Background',
-                  description: 'Set page color or image',
-                  color: Colors.teal,
-                  onTap: () {
-                    widget.onComplete();
-                  },
-                ),
-              ],
+  _buildElementButton(
+    emoji: '🎨',
+    label: 'Change Background',
+    description: 'Set page color or image',
+    color: Colors.teal,
+    onTap: () {
+      // ✅ Call the parent's change background function WITHOUT closing wizard
+      widget.onChangeBackground();
+      _showSnackBar('Change page background');
+    },
+  ),
+],
             ),
           ),
 
@@ -872,7 +1065,7 @@ Widget _buildEditingInterface() {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: widget.onComplete,
+                    onPressed: _applyPendingChangesAndComplete,
                     icon: const Icon(Icons.check_circle, size: 22),
                     label: const Text(
                       'Finish Editing',
