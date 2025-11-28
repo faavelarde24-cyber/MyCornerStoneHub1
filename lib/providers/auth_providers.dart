@@ -12,3 +12,10 @@ final currentUserRoleProvider = FutureProvider<String?>((ref) async {
   final authService = ref.watch(authServiceProvider);
   return await authService.getCurrentUserRole();
 });
+
+
+// Provider for current user's database ID
+final currentUserIdProvider = Provider<int?>((ref) {
+  final authService = ref.watch(authServiceProvider);
+  return authService.currentAppUser?.usersId;
+});

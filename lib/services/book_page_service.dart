@@ -82,16 +82,94 @@ Future<BookPage?> createPage({
       return null;
     }
   }
-  /// Get all pages for a book
- Future<List<BookPage>> getBookPages(String bookId) async {
+/// Get all pages for a book
+Future<List<BookPage>> getBookPages(String bookId) async {
   final startTime = DateTime.now();
   debugPrint('🔵 [BookPageService] === START getBookPages ===');
   debugPrint('🔵 [BookPageService] Book ID: $bookId');
   
   try {
+    final userId = _client.auth.currentUser?.id;
+    if (userId == null) {
+      debugPrint('❌ No authenticated user found');
+      return [];
+    }
+
+    // Get the UsersId from the Users table
+    final userResponse = await _client
+        .from('Users')
+        .select('UsersId')
+        .eq('AuthId', userId)
+        .single();
+    final usersId = userResponse['UsersId'] as int;
+
+    debugPrint('🔵 [BookPageService] User ID: $usersId');
+
+    // ✅ CRITICAL FIX: Check if user has access to this book
+    // First check if user owns the book
+    final bookResponse = await _client
+        .from('Books')
+        .select('CreatorId')
+        .eq('BookId', int.parse(bookId))
+        .maybeSingle();
+    
+    if (bookResponse == null) {
+      debugPrint('❌ Book not found: $bookId');
+      return [];
+    }
+
+    final bookCreatorId = bookResponse['CreatorId'] as int;
+    bool hasAccess = (bookCreatorId == usersId);
+    
+    debugPrint('🔵 [BookPageService] Book Creator ID: $bookCreatorId');
+    debugPrint('🔵 [BookPageService] User owns book: $hasAccess');
+
+    // If user doesn't own the book, check library membership
+    if (!hasAccess) {
+      debugPrint('🔵 [BookPageService] Checking library access...');
+      
+      // Get libraries that contain this book
+      final libraryBooksResponse = await _client
+          .from('LibraryBooks')
+          .select('LibraryId')
+          .eq('BookId', int.parse(bookId));
+      
+      if ((libraryBooksResponse as List).isNotEmpty) {
+        final libraryIds = libraryBooksResponse
+            .map((lb) => lb['LibraryId'] as int)
+            .toList();
+        
+        debugPrint('🔵 [BookPageService] Book is in ${libraryIds.length} libraries: $libraryIds');
+        
+        // Check if user is a member of any of these libraries
+        final membershipResponse = await _client
+            .from('LibraryMembers')
+            .select('LibraryId, AccessLevel')
+            .eq('UserId', usersId)
+            .inFilter('LibraryId', libraryIds);
+        
+        if ((membershipResponse as List).isNotEmpty) {
+          hasAccess = true;
+          final accessLevel = membershipResponse.first['AccessLevel'];
+          debugPrint('🔵 [BookPageService] ✅ User is library member with access: $accessLevel');
+        } else {
+          debugPrint('🔵 [BookPageService] ❌ User is not a member of any library containing this book');
+        }
+      } else {
+        debugPrint('🔵 [BookPageService] ❌ Book is not in any library');
+      }
+    }
+
+    if (!hasAccess) {
+      debugPrint('🔵 [BookPageService] ❌ Access denied - user cannot view this book');
+      return [];
+    }
+
+    debugPrint('🔵 [BookPageService] ✅ Access granted - fetching pages...');
     debugPrint('🔵 [BookPageService] Querying Supabase...');
     final queryStartTime = DateTime.now();
     
+    // ✅ User has access - fetch pages without any user-specific filtering
     final response = await _client
         .from('BookPages')
         .select()
@@ -173,7 +251,6 @@ Future<BookPage?> createPage({
     return [];
   }
 }
-
   /// Get a single page by ID
   Future<BookPage?> getPage(String pageId) async {
     try {

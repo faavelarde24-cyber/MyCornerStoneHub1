@@ -8,15 +8,33 @@ import '../pages/auth/login_page.dart';
 
 /// Handles routing users to the correct dashboard based on their role
 class RoleRedirect {
-  /// Returns the Book Dashboard as the default landing page after login
-  /// All users (teacher, student, principal) land here first
+  /// Returns the appropriate dashboard based on user role after login/signup
+  /// - Students: StudentDashboard (no Book Dashboard access)
+  /// - Teachers: BookDashboard
+  /// - Principals: BookDashboard
+  /// - Unknown/null: LoginPage
   static Widget getDashboardForRole(String? role) {
     if (role == null) {
       return const LoginPage();
     }
 
-    // Everyone goes to Book Dashboard first (regardless of role)
-    return const BookDashboardPage();
+    switch (role.toLowerCase().trim()) {
+      case 'student':
+        // Students go directly to their Student Dashboard
+        return const StudentDashboard();
+      
+      case 'teacher':
+        // Teachers go to Book Dashboard
+        return const BookDashboardPage();
+      
+      case 'principal':
+        // Principals go to Book Dashboard
+        return const BookDashboardPage();
+      
+      default:
+        // Unknown roles go to login
+        return const LoginPage();
+    }
   }
 
   /// Returns the role-specific dashboard (called from drawer menu)
@@ -121,5 +139,19 @@ class RoleRedirect {
   /// Gets the list of all valid roles
   static List<String> getValidRoles() {
     return ['teacher', 'student', 'principal'];
+  }
+
+  /// Checks if the user is a student
+  static bool isStudent(String? role) {
+    return role?.toLowerCase().trim() == 'student';
+  }
+
+  /// Checks if the user should have access to Book Dashboard
+  /// (Teachers and Principals have access, Students do not)
+  static bool hasBookDashboardAccess(String? role) {
+    if (role == null) return false;
+    
+    final normalizedRole = role.toLowerCase().trim();
+    return normalizedRole == 'teacher' || normalizedRole == 'principal';
   }
 }

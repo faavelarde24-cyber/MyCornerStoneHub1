@@ -1,13 +1,12 @@
+import 'dart:async'; 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../models/book_models.dart';
 import '../../../providers/book_providers.dart';
-import 'wizard_exit_dialog.dart';
-import 'dart:async';
-
 
 /// Simplified Book Creator Wizard - Two-Step Process
 class PageContentWizard extends ConsumerStatefulWidget {
+  final String bookId;
   final VoidCallback onComplete;
   final VoidCallback onSkip;
   final VoidCallback onAddText;
@@ -16,10 +15,11 @@ class PageContentWizard extends ConsumerStatefulWidget {
   final VoidCallback onAddAudio;
   final VoidCallback onAddVideo;
   final VoidCallback onChangeBackground;
-  final String initialBookTopic;
+  
 
   const PageContentWizard({
     super.key,
+    required this.bookId,
     required this.onComplete,
     required this.onSkip,
     required this.onAddText,
@@ -28,8 +28,6 @@ class PageContentWizard extends ConsumerStatefulWidget {
     required this.onAddAudio,
     required this.onAddVideo,
     required this.onChangeBackground,
-    this.initialBookTopic = '',
-
   });
   @override
   ConsumerState<PageContentWizard> createState() => _PageContentWizardState();
@@ -41,34 +39,6 @@ class _PageContentWizardState extends ConsumerState<PageContentWizard>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
-
-// ✅ NEW: Local state for wizard-only changes
-List<BookPage> _localPages = [];
-Map<String, List<PageElement>> _localPageElements = {}; // pageId -> elements
-Map<String, PageBackground> _localPageBackgrounds = {}; // pageId -> background
-int _localCurrentPageIndex = 0;
-bool _hasUnsavedChanges = false;
-
-// ✅ NEW: Drag & resize state (copied from main editor)
-final Map<String, Offset> _elementOffsets = {};
-final Map<String, Size> _elementSizes = {};
-final Map<String, double> _elementRotations = {};
-String? _currentlyDraggingId;
-String? _currentlyResizingId;
-String? _currentlyRotatingId;
-String? _selectedElementId;
-
-// ✅ NEW: Drag state
-Offset? _dragStartGlobalMousePosition;
-Offset? _dragStartElementPosition;
-Offset? _dragMouseOffset;
-
-// ✅ NEW: Resize state
-Offset? _resizeStartMousePosition;
-Size? _resizeStartElementSize;
-Offset? _resizeStartElementPosition;
-
-
   // Wizard state
   int _currentStep = 0; // 0 = question, 1 = editing interface
   String _bookTopic = '';
@@ -77,78 +47,60 @@ Offset? _resizeStartElementPosition;
   // Track pending actions to apply when user finishes
   final List<VoidCallback> _pendingActions = [];
 
-@override
-void initState() {
-  super.initState();
+  Timer? _debounceTimer;
 
-  if (widget.initialBookTopic.isNotEmpty) {
-    _bookTopic = widget.initialBookTopic;
-    _topicController.text = widget.initialBookTopic;
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _fadeAnimation = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOut,
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.1),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOut,
+    ));
+
+    _controller.forward();
   }
 
-  _controller = AnimationController(
-    duration: const Duration(milliseconds: 400),
-    vsync: this,
-  );
-
-  _fadeAnimation = CurvedAnimation(
-    parent: _controller,
-    curve: Curves.easeOut,
-  );
-
-  _slideAnimation = Tween<Offset>(
-    begin: const Offset(0, 0.1),
-    end: Offset.zero,
-  ).animate(CurvedAnimation(
-    parent: _controller,
-    curve: Curves.easeOut,
-  ));
-
-  _controller.forward();
+@override
+void didChangeDependencies() {
+  super.didChangeDependencies();
   
-  // ✅ NEW: Load pages into local state
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    _loadPagesIntoLocalState();
-  });
-}
-
-
-void _loadPagesIntoLocalState() {
-  final bookId = ref.read(currentBookIdProvider);
-  if (bookId == null) return;
-
-  final pagesAsync = ref.read(bookPagesProvider(bookId));
-  pagesAsync.when(
-    data: (pages) {
-      setState(() {
-        _localPages = List<BookPage>.from(pages);
-        
-        // Initialize local element and background maps
-        for (final page in pages) {
-          _localPageElements[page.id] = List<PageElement>.from(page.elements);
-          _localPageBackgrounds[page.id] = page.background;
-        }
-        
-        _localCurrentPageIndex = ref.read(currentPageIndexProvider);
-      });
-      
-      debugPrint('✅ Loaded ${pages.length} pages into wizard local state');
-    },
-    loading: () {},
-    error: (error, stack) {
-      debugPrint('❌ Error loading pages into wizard: $error');
-    },
-  );
+  // Only load once
+  if (_topicController.text.isEmpty) {
+    final bookAsync = ref.watch(bookProvider(widget.bookId));
+    
+    bookAsync.whenData((book) {
+      if (book != null && mounted) {
+        setState(() {
+          _topicController.text = book.title;
+          _bookTopic = book.title; // ✅ Also set initial topic
+        });
+      }
+    });
+  }
 }
 
   @override
   void dispose() {
     _controller.dispose();
     _topicController.dispose();
+    _debounceTimer?.cancel();
     super.dispose();
   }
 
-void _goToEditingMode() async {
+void _goToEditingMode() {
   if (_topicController.text.trim().isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -159,106 +111,55 @@ void _goToEditingMode() async {
     return;
   }
 
-  final newTopic = _topicController.text.trim();
+  final newTitle = _topicController.text.trim();
   
-  // ✅ NEW: Update book title if it changed
-  if (newTopic != widget.initialBookTopic) {
-    final bookId = ref.read(currentBookIdProvider);
-    if (bookId != null) {
-      // Show loading indicator
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              ),
-              SizedBox(width: 16),
-              Text('Updating book title...'),
-            ],
-          ),
-          duration: Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-
-      // Update the book title
-      final bookActions = ref.read(bookActionsProvider);
-      final success = await bookActions.updateBook(
-        bookId: bookId,
-        title: newTopic,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        
-if (success) {
-  debugPrint('📚 Title update successful - refreshing providers');
-  
-  // ✅ CRITICAL: Force immediate provider refresh
-  ref.invalidate(bookProvider(bookId));
-  ref.invalidate(userBooksProvider);
-  
-  // ✅ Wait for provider to rebuild with new data
-  await Future.delayed(const Duration(milliseconds: 500));
-  
-  // ✅ Force a read to ensure the provider has refreshed
-  try {
-    final updatedBook = await ref.read(bookProvider(bookId).future);
-    debugPrint('✅ Book title now: ${updatedBook?.title}');
-  } catch (e) {
-    debugPrint('⚠️ Error reading updated book: $e');
-  }
-  
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.white),
-            SizedBox(width: 12),
-            Text('Book title updated!'),
-          ],
-        ),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-} else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Failed to update book title'),
-              backgroundColor: Colors.red,
-              duration: Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      }
-    }
-  }
+  // ✅ Update book title in database
+  _updateBookTitle(newTitle);
 
   setState(() {
-    _bookTopic = newTopic;
+    _bookTopic = newTitle;
     _currentStep = 1;
   });
 
   // Animate transition
   _controller.forward(from: 0);
 }
-  void _goBackToQuestion() {
-    setState(() {
-      _currentStep = 0;
-    });
-    _controller.forward(from: 0);
+
+// ✅ ADD THIS METHOD - Updates book title in real-time
+void _updateBookTitle(String newTitle) async {
+  if (newTitle.trim().isEmpty) return;
+  
+  final bookActions = ref.read(bookActionsProvider);
+  
+  // Update book title in database
+  final success = await bookActions.updateBook(
+    bookId: widget.bookId,
+    title: newTitle.trim(),
+  );
+  
+  if (success) {
+    debugPrint('✅ Book title updated to: $newTitle');
+    
+    // ✅ Invalidate provider to refresh UI everywhere
+    ref.invalidate(bookProvider(widget.bookId));
+    ref.invalidate(userBooksProvider);
+  } else {
+    debugPrint('❌ Failed to update book title');
   }
+}
+
+
+// Add this method after _applyPendingChangesAndComplete()
+
+void _goBackToQuestion() {
+  setState(() {
+    _currentStep = 0; // Go back to the question step
+  });
+  
+  // Animate transition
+  _controller.forward(from: 0);
+}
+
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(

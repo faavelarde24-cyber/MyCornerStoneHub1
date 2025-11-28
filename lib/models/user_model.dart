@@ -1,4 +1,6 @@
 // lib/models/user_model.dart
+import 'package:flutter/material.dart';
+
 class AppUser {
   final int? usersId;
   final String email;
@@ -32,26 +34,40 @@ class AppUser {
     required this.userCreated,
   });
 
-  factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
-        usersId: json['usersid'],
-        email: json['email'],
-        passwordHash: json['passwordhash'],
-        fullName: json['fullname'],
-        role: json['role'],
-        profileImageUrl: json['profileimageurl'],
-        phoneNumber: json['phonenumber'],
-        bio: json['bio'],
-        organizationId: json['organizationid'],
-        userGroupId: json['usergroupid'],
-        lastUpdateDate: json['lastupdatedate'] != null
-            ? DateTime.parse(json['lastupdatedate'])
-            : null,
-        lastUpdateUser: json['lastupdateuser'],
-        dateCreated: json['datecreated'] != null
-            ? DateTime.parse(json['datecreated'])
-            : null,
-        userCreated: json['usercreated'],
-      );
+ factory AppUser.fromJson(Map<String, dynamic> json) {
+  // ✅ Try multiple case variations for UsersId
+  int? usersId = json['usersid'] as int? ?? 
+                 json['UsersId'] as int? ?? 
+                 json['UsersID'] as int? ?? 
+                 json['USERSID'] as int?;
+  
+  debugPrint('🔍 Parsing AppUser - usersId: $usersId');
+  
+  return AppUser(
+    usersId: usersId,
+    email: json['email'] ?? json['Email'] ?? '',
+    passwordHash: json['passwordhash'] ?? json['PasswordHash'] ?? '',
+    fullName: json['fullname'] ?? json['FullName'] ?? '',
+    role: json['role'] ?? json['Role'] ?? '',
+    profileImageUrl: json['profileimageurl'] ?? json['ProfileImageUrl'],
+    phoneNumber: json['phonenumber'] ?? json['PhoneNumber'],
+    bio: json['bio'] ?? json['Bio'],
+    organizationId: json['organizationid'] as int? ?? json['OrganizationId'] as int?,
+    userGroupId: json['usergroupid'] as int? ?? json['UserGroupId'] as int?,
+    lastUpdateDate: json['lastupdatedate'] != null
+        ? DateTime.parse(json['lastupdatedate'])
+        : (json['LastUpdateDate'] != null 
+            ? DateTime.parse(json['LastUpdateDate'])
+            : null),
+    lastUpdateUser: json['lastupdateuser'] ?? json['LastUpdateUser'] ?? '',
+    dateCreated: json['datecreated'] != null
+        ? DateTime.parse(json['datecreated'])
+        : (json['DateCreated'] != null 
+            ? DateTime.parse(json['DateCreated'])
+            : null),
+    userCreated: json['usercreated'] ?? json['UserCreated'] ?? '',
+  );
+}
 
   Map<String, dynamic> toJson() => {
         'email': email,

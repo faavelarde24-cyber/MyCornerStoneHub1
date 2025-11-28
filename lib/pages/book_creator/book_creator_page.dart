@@ -115,6 +115,7 @@ class BookCreatorAppBarKeys {
   final Map<String, ({Offset? position, Size? size, double? rotation})> _pendingUpdates = {};
 
   List<BookPage>? _localCanvasPageOrder;
+  List<BookPage>? _pendingProviderUpdate;
 
     // Undo/Redo
     final UndoRedoManager _undoRedoManager = UndoRedoManager();
@@ -426,30 +427,49 @@ class BookCreatorAppBarKeys {
       });
     }
 
-    Future<void> _saveCurrentPage() async {
-      final bookId = ref.read(currentBookIdProvider);
-      if (bookId == null) return;
+Future<void> _saveCurrentPage() async {
+  final bookId = ref.read(currentBookIdProvider);
+  if (bookId == null) return;
 
-      setState(() => _isSaving = true);
-      
-      // Save current state to undo manager
-      final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
-      final pageIndex = ref.read(currentPageIndexProvider);
-      
-      await pagesAsync.when(
-        data: (pages) {
-          if (pages.isNotEmpty && pageIndex < pages.length) {
-            final currentPage = pages[pageIndex];
-            _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-          }
-        },
-        loading: () {},
-        error: (_, _) {},
-      );
-      
-      await Future.delayed(const Duration(milliseconds: 500));
-      setState(() => _isSaving = false);
-    }
+  // 🚀 CRITICAL: Check for ANY interaction or pending changes
+  final hasInteraction = _currentlyDraggingId != null || 
+                         _currentlyResizingId != null || 
+                         _currentlyRotatingId != null;
+  
+  final hasPendingChanges = _elementOffsets.isNotEmpty || 
+                           _elementSizes.isNotEmpty || 
+                           _elementRotations.isNotEmpty ||
+                           _localElementCache.isNotEmpty;
+
+  if (hasInteraction || hasPendingChanges) {
+    debugPrint('⏸️ Auto-save skipped - active interaction or pending changes');
+    return;
+  }
+
+  debugPrint('💾 Auto-save: Starting background save...');
+  setState(() => _isSaving = true);
+  
+  // Just save to undo manager - NO provider invalidation
+  final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+  final pageIndex = ref.read(currentPageIndexProvider);
+  
+  await pagesAsync.when(
+    data: (pages) {
+      if (pages.isNotEmpty && pageIndex < pages.length) {
+        final currentPage = pages[pageIndex];
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+        debugPrint('✅ Auto-save: Undo state saved (no provider refresh)');
+      }
+    },
+    loading: () {},
+    error: (_, _) {},
+  );
+  
+  await Future.delayed(const Duration(milliseconds: 300));
+  setState(() => _isSaving = false);
+  
+  debugPrint('✅ Auto-save completed successfully');
+}
 
     // Undo/Redo Methods
     void _undo() async {
@@ -1984,128 +2004,143 @@ class BookCreatorAppBarKeys {
     );
   }
 
-  void _handleResizeEnd(String elementId, PageElement element) {
-    debugPrint('🧹 === RESIZE END ===');
-    debugPrint('Element: $elementId');
-    
-    final finalSize = _elementSizes[elementId];
-    final finalPosition = _elementOffsets[elementId];
-    final originalSize = element.size;
-    final originalPosition = element.position;
-    
-    // ✅ STEP 1: Clear resize state IMMEDIATELY for instant UI response
-    setState(() {
-      _currentlyResizingId = null;
-      _resizeStartMousePosition = null;
-      _resizeStartElementSize = null;
-      _resizeStartElementPosition = null;
-    });
-    
-    // ✅ STEP 2: Check if anything actually changed
-    final sizeChanged = finalSize != null && 
-        ((finalSize.width - originalSize.width).abs() > 1.0 || 
-        (finalSize.height - originalSize.height).abs() > 1.0);
-    
-    final positionChanged = finalPosition != null && 
-        (finalPosition - originalPosition).distance > 1.0;
-    
-    if (!sizeChanged && !positionChanged) {
-      debugPrint('⚠️ No significant changes detected');
+void _handleResizeEnd(String elementId, PageElement element) {
+  debugPrint('🧹 === RESIZE END ===');
+  debugPrint('Element: $elementId');
+  
+  final finalSize = _elementSizes[elementId];
+  final finalPosition = _elementOffsets[elementId];
+  final originalSize = element.size;
+  final originalPosition = element.position;
+  
+  // ✅ STEP 1: Clear resize state IMMEDIATELY for instant UI response
+  setState(() {
+    _currentlyResizingId = null;
+    _resizeStartMousePosition = null;
+    _resizeStartElementSize = null;
+    _resizeStartElementPosition = null;
+  });
+  
+  // ✅ STEP 2: Check if anything actually changed
+  final sizeChanged = finalSize != null && 
+      ((finalSize.width - originalSize.width).abs() > 1.0 || 
+      (finalSize.height - originalSize.height).abs() > 1.0);
+  
+  final positionChanged = finalPosition != null && 
+      (finalPosition - originalPosition).distance > 1.0;
+  
+  if (!sizeChanged && !positionChanged) {
+    debugPrint('⚠️ No significant changes detected');
+    _elementSizes.remove(elementId);
+    _elementOffsets.remove(elementId);
+    if (mounted) setState(() {});
+    return;
+  }
+
+  debugPrint('💾 Resize end - saving changes (size: $sizeChanged, position: $positionChanged)');
+
+  // ✅ STEP 3: Write to database in background (non-blocking)
+  _saveElementResizeToDatabase(
+    elementId: elementId,
+    element: element,
+    finalSize: finalSize ?? originalSize,
+    finalPosition: finalPosition ?? originalPosition,
+  );
+  
+  // ✅ NEW: Apply any queued provider updates
+  _applyPendingProviderUpdates();
+}
+
+  /// Save element resize to database in background
+void _saveElementResizeToDatabase({
+  required String elementId,
+  required PageElement element,
+  required Size finalSize,
+  required Offset finalPosition,
+}) async {
+  try {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      debugPrint('❌ No bookId for background resize save');
       _elementSizes.remove(elementId);
       _elementOffsets.remove(elementId);
-      if (mounted) setState(() {});
       return;
     }
 
-    debugPrint('💾 Resize end - saving changes (size: $sizeChanged, position: $positionChanged)');
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    await pagesAsync.when(
+      data: (pages) async {
+        final pageIndex = ref.read(currentPageIndexProvider);
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('❌ Invalid page for background resize save');
+          _elementSizes.remove(elementId);
+          _elementOffsets.remove(elementId);
+          return;
+        }
 
-    // ✅ STEP 3: Write to database in background (non-blocking)
-    _saveElementResizeToDatabase(
-      elementId: elementId,
-      element: element,
-      finalSize: finalSize ?? originalSize,
-      finalPosition: finalPosition ?? originalPosition,
-    );
-  }
+        final currentPage = pages[pageIndex];
+        
+        // Save to undo manager
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
 
-  /// Save element resize to database in background
-  void _saveElementResizeToDatabase({
-    required String elementId,
-    required PageElement element,
-    required Size finalSize,
-    required Offset finalPosition,
-  }) async {
-    try {
-      final bookId = ref.read(currentBookIdProvider);
-      if (bookId == null) {
-        debugPrint('❌ No bookId for background resize save');
-        _elementSizes.remove(elementId);
-        _elementOffsets.remove(elementId);
-        return;
-      }
+        // Create updated element
+        final updatedElement = PageElement(
+          id: element.id,
+          type: element.type,
+          position: finalPosition,
+          size: finalSize,
+          rotation: element.rotation,
+          properties: element.properties,
+          textStyle: element.textStyle,
+          textAlign: element.textAlign,
+          lineHeight: element.lineHeight,
+          shadows: element.shadows,
+          locked: element.locked,
+        );
 
-      final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
-      await pagesAsync.when(
-        data: (pages) async {
-          final pageIndex = ref.read(currentPageIndexProvider);
-          if (pages.isEmpty || pageIndex >= pages.length) {
-            debugPrint('❌ Invalid page for background resize save');
-            _elementSizes.remove(elementId);
-            _elementOffsets.remove(elementId);
+        // Write to database
+        final pageActions = ref.read(pageActionsProvider);
+        final success = await pageActions.updateElement(
+          currentPage.id, 
+          updatedElement,
+          skipInvalidation: true, // 🚀 Don't refresh provider during resize
+        );
+
+        if (success) {
+          debugPrint('✅ Background resize write successful');
+          
+          // 🚀 CRITICAL FIX: Small delay to ensure database replication
+          await Future.delayed(const Duration(milliseconds: 100));
+          
+          // Invalidate to fetch fresh data
+          debugPrint('🔄 Invalidating provider to fetch updated resize');
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          // Wait for provider to refresh
+          await Future.delayed(const Duration(milliseconds: 400));
+          
+          // 🚀 NEW: Verify the provider has the CORRECT new data before clearing cache
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          if (freshPages.isEmpty || pageIndex >= freshPages.length) {
+            debugPrint('⚠️ Fresh pages invalid - keeping cache');
             return;
           }
-
-          final currentPage = pages[pageIndex];
           
-          // Save to undo manager
-          _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-
-          // Create updated element
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: finalPosition,
-            size: finalSize,
-            rotation: element.rotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-            locked: element.locked,
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == elementId,
+            orElse: () => element,
           );
-
-          // Write to database
-          final pageActions = ref.read(pageActionsProvider);
-          final success = await pageActions.updateElement(currentPage.id, updatedElement);
-
-          if (success) {
-            debugPrint('✅ Background resize write successful');
-            
-            // Invalidate provider
-            ref.invalidate(bookPagesProvider(bookId));
-            
-            // Wait for provider to refresh
-            await Future.delayed(const Duration(milliseconds: 300));
-            
-            // Verify and clear cache
-            final freshPages = await ref.read(bookPagesProvider(bookId).future);
-            if (freshPages.isEmpty || pageIndex >= freshPages.length) {
-              debugPrint('⚠️ Fresh pages invalid - keeping cache');
-              return;
-            }
-            
-            final freshElement = freshPages[pageIndex].elements.firstWhere(
-              (e) => e.id == elementId,
-              orElse: () => element,
-            );
-            
-            final sizeMatches = (freshElement.size.width - finalSize.width).abs() < 2.0 &&
-                                (freshElement.size.height - finalSize.height).abs() < 2.0;
-            final positionMatches = (freshElement.position - finalPosition).distance < 2.0;
-            
-            if (sizeMatches && positionMatches) {
-              debugPrint('✅ Provider confirmed resize - clearing cache');
+          
+          final sizeMatches = (freshElement.size.width - finalSize.width).abs() < 2.0 &&
+                              (freshElement.size.height - finalSize.height).abs() < 2.0;
+          final positionMatches = (freshElement.position - finalPosition).distance < 2.0;
+          
+          if (sizeMatches && positionMatches) {
+            debugPrint('✅ Provider confirmed resize - clearing cache');
+            // 🚀 CRITICAL: Only clear if NOT currently interacting
+            if (_currentlyDraggingId != elementId && 
+                _currentlyResizingId != elementId && 
+                _currentlyRotatingId != elementId) {
               if (mounted) {
                 setState(() {
                   _elementSizes.remove(elementId);
@@ -2113,13 +2148,20 @@ class BookCreatorAppBarKeys {
                 });
               }
             } else {
-              debugPrint('⚠️ Provider data mismatch - keeping cache');
-              debugPrint('   Provider size: ${freshElement.size} vs $finalSize');
-              debugPrint('   Provider pos: ${freshElement.position} vs $finalPosition');
-              
-              // Retry after delay
-              await Future.delayed(const Duration(seconds: 2));
-              if (mounted) {
+              debugPrint('⏸️ User still interacting - keeping cache');
+            }
+          } else {
+            debugPrint('⚠️ Provider data mismatch - keeping cache');
+            debugPrint('   Provider size: ${freshElement.size} vs $finalSize');
+            debugPrint('   Provider pos: ${freshElement.position} vs $finalPosition');
+            
+            // Retry after delay
+            await Future.delayed(const Duration(seconds: 2));
+            if (mounted && _elementOffsets.containsKey(elementId)) {
+              // Double-check user isn't interacting now
+              if (_currentlyDraggingId != elementId && 
+                  _currentlyResizingId != elementId && 
+                  _currentlyRotatingId != elementId) {
                 setState(() {
                   _elementSizes.remove(elementId);
                   _elementOffsets.remove(elementId);
@@ -2127,181 +2169,217 @@ class BookCreatorAppBarKeys {
                 debugPrint('🧹 Cache cleared after retry delay');
               }
             }
-          } else {
-            debugPrint('❌ Background resize write failed');
-            _elementSizes.remove(elementId);
-            _elementOffsets.remove(elementId);
           }
-        },
-        loading: () {
-          debugPrint('⏳ Pages loading during resize save');
+        } else {
+          debugPrint('❌ Background resize write failed');
           _elementSizes.remove(elementId);
           _elementOffsets.remove(elementId);
-        },
-        error: (error, stack) {
-          debugPrint('❌ Error during resize save: $error');
-          _elementSizes.remove(elementId);
-          _elementOffsets.remove(elementId);
-        },
-      );
-    } catch (e) {
-      debugPrint('❌ Exception in resize save: $e');
-      if (mounted) {
-        setState(() {
-          _elementSizes.remove(elementId);
-          _elementOffsets.remove(elementId);
-        });
-      }
+        }
+      },
+      loading: () {
+        debugPrint('⏳ Pages loading during resize save');
+        _elementSizes.remove(elementId);
+        _elementOffsets.remove(elementId);
+      },
+      error: (error, stack) {
+        debugPrint('❌ Error during resize save: $error');
+        _elementSizes.remove(elementId);
+        _elementOffsets.remove(elementId);
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Exception in resize save: $e');
+    if (mounted) {
+      setState(() {
+        _elementSizes.remove(elementId);
+        _elementOffsets.remove(elementId);
+      });
     }
   }
+}
 
-  void _handleRotationEnd(String elementId, PageElement element) {
-    debugPrint('🔄 === ROTATION END ===');
-    debugPrint('Element: $elementId');
-    
-    final finalRotation = _elementRotations[elementId] ?? element.rotation;
-    final originalRotation = element.rotation;
-    
-    // ✅ STEP 1: Clear rotation state IMMEDIATELY
+void _handleRotationEnd(String elementId, PageElement element) {
+  debugPrint('🔄 === ROTATION END ===');
+  debugPrint('Element: $elementId');
+  
+  final finalRotation = _elementRotations[elementId] ?? element.rotation;
+  final originalRotation = element.rotation;
+  
+  // ✅ STEP 1: Clear rotation state IMMEDIATELY
+  setState(() {
+    _currentlyRotatingId = null;
+  });
+  
+  // ✅ STEP 2: Check if rotation actually changed
+  final rotationChanged = (finalRotation - originalRotation).abs() > 0.01; // ~0.5 degrees
+  
+  if (!rotationChanged) {
+    debugPrint('⚠️ No significant rotation change');
+    _elementRotations.remove(elementId);
+    if (mounted) setState(() {});
+    return;
+  }
+
+  final rotationDegrees = (finalRotation * 180 / math.pi).toStringAsFixed(1);
+  debugPrint('💾 Rotation end - saving $rotationDegrees° rotation');
+
+  // ✅ STEP 3: Write to database in background (non-blocking)
+  _saveElementRotationToDatabase(
+    elementId: elementId,
+    element: element,
+    finalRotation: finalRotation,
+  );
+  
+  // ✅ NEW: Apply any queued provider updates
+  _applyPendingProviderUpdates();
+}
+
+// ✅ NEW: Apply queued updates after interaction ends
+void _applyPendingProviderUpdates() {
+  if (_pendingProviderUpdate != null && !isUserInteracting) {
+    debugPrint('✅ Applying queued provider update');
     setState(() {
-      _currentlyRotatingId = null;
+      _localCanvasPageOrder = List<BookPage>.from(_pendingProviderUpdate!);
+      _pendingProviderUpdate = null;
     });
-    
-    // ✅ STEP 2: Check if rotation actually changed
-    final rotationChanged = (finalRotation - originalRotation).abs() > 0.01; // ~0.5 degrees
-    
-    if (!rotationChanged) {
-      debugPrint('⚠️ No significant rotation change');
+  }
+}
+
+
+  /// Save element rotation to database in background
+void _saveElementRotationToDatabase({
+  required String elementId,
+  required PageElement element,
+  required double finalRotation,
+}) async {
+  try {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      debugPrint('❌ No bookId for background rotation save');
       _elementRotations.remove(elementId);
-      if (mounted) setState(() {});
       return;
     }
 
-    final rotationDegrees = (finalRotation * 180 / math.pi).toStringAsFixed(1);
-    debugPrint('💾 Rotation end - saving $rotationDegrees° rotation');
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    await pagesAsync.when(
+      data: (pages) async {
+        final pageIndex = ref.read(currentPageIndexProvider);
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('❌ Invalid page for background rotation save');
+          _elementRotations.remove(elementId);
+          return;
+        }
 
-    // ✅ STEP 3: Write to database in background (non-blocking)
-    _saveElementRotationToDatabase(
-      elementId: elementId,
-      element: element,
-      finalRotation: finalRotation,
-    );
-  }
+        final currentPage = pages[pageIndex];
+        
+        // Save to undo manager
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
 
-  /// Save element rotation to database in background
-  void _saveElementRotationToDatabase({
-    required String elementId,
-    required PageElement element,
-    required double finalRotation,
-  }) async {
-    try {
-      final bookId = ref.read(currentBookIdProvider);
-      if (bookId == null) {
-        debugPrint('❌ No bookId for background rotation save');
-        _elementRotations.remove(elementId);
-        return;
-      }
+        // Create updated element
+        final updatedElement = PageElement(
+          id: element.id,
+          type: element.type,
+          position: element.position,
+          size: element.size,
+          rotation: finalRotation,
+          properties: element.properties,
+          textStyle: element.textStyle,
+          textAlign: element.textAlign,
+          lineHeight: element.lineHeight,
+          shadows: element.shadows,
+          locked: element.locked,
+        );
 
-      final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
-      await pagesAsync.when(
-        data: (pages) async {
-          final pageIndex = ref.read(currentPageIndexProvider);
-          if (pages.isEmpty || pageIndex >= pages.length) {
-            debugPrint('❌ Invalid page for background rotation save');
-            _elementRotations.remove(elementId);
+        // Write to database
+        final pageActions = ref.read(pageActionsProvider);
+        final success = await pageActions.updateElement(
+          currentPage.id, 
+          updatedElement,
+          skipInvalidation: true, // 🚀 Don't refresh provider during rotation
+        );
+
+        if (success) {
+          debugPrint('✅ Background rotation write successful');
+          
+          // 🚀 CRITICAL FIX: Small delay to ensure database replication
+          await Future.delayed(const Duration(milliseconds: 100));
+          
+          // Invalidate to fetch fresh data
+          debugPrint('🔄 Invalidating provider to fetch updated rotation');
+          ref.invalidate(bookPagesProvider(bookId));
+          
+          // Wait for provider to refresh
+          await Future.delayed(const Duration(milliseconds: 400));
+          
+          // 🚀 NEW: Verify the provider has the CORRECT new rotation before clearing cache
+          final freshPages = await ref.read(bookPagesProvider(bookId).future);
+          if (freshPages.isEmpty || pageIndex >= freshPages.length) {
+            debugPrint('⚠️ Fresh pages invalid - keeping cache');
             return;
           }
-
-          final currentPage = pages[pageIndex];
           
-          // Save to undo manager
-          _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-
-          // Create updated element
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: element.position,
-            size: element.size,
-            rotation: finalRotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-            locked: element.locked,
+          final freshElement = freshPages[pageIndex].elements.firstWhere(
+            (e) => e.id == elementId,
+            orElse: () => element,
           );
-
-          // Write to database
-          final pageActions = ref.read(pageActionsProvider);
-          final success = await pageActions.updateElement(currentPage.id, updatedElement);
-
-          if (success) {
-            debugPrint('✅ Background rotation write successful');
-            
-            // Invalidate provider
-            ref.invalidate(bookPagesProvider(bookId));
-            
-            // Wait for provider to refresh
-            await Future.delayed(const Duration(milliseconds: 300));
-            
-            // Verify and clear cache
-            final freshPages = await ref.read(bookPagesProvider(bookId).future);
-            if (freshPages.isEmpty || pageIndex >= freshPages.length) {
-              debugPrint('⚠️ Fresh pages invalid - keeping cache');
-              return;
-            }
-            
-            final freshElement = freshPages[pageIndex].elements.firstWhere(
-              (e) => e.id == elementId,
-              orElse: () => element,
-            );
-            
-            final rotationMatches = (freshElement.rotation - finalRotation).abs() < 0.01;
-            
-            if (rotationMatches) {
-              debugPrint('✅ Provider confirmed rotation - clearing cache');
+          
+          final rotationMatches = (freshElement.rotation - finalRotation).abs() < 0.01;
+          
+          if (rotationMatches) {
+            debugPrint('✅ Provider confirmed rotation - clearing cache');
+            // 🚀 CRITICAL: Only clear if NOT currently interacting
+            if (_currentlyDraggingId != elementId && 
+                _currentlyResizingId != elementId && 
+                _currentlyRotatingId != elementId) {
               if (mounted) {
                 setState(() {
                   _elementRotations.remove(elementId);
                 });
               }
             } else {
-              debugPrint('⚠️ Provider rotation mismatch - keeping cache');
-              debugPrint('   Provider: ${freshElement.rotation} vs $finalRotation');
-              
-              // Retry after delay
-              await Future.delayed(const Duration(seconds: 2));
-              if (mounted) {
+              debugPrint('⏸️ User still interacting - keeping cache');
+            }
+          } else {
+            debugPrint('⚠️ Provider rotation mismatch - keeping cache');
+            debugPrint('   Provider: ${freshElement.rotation} vs $finalRotation');
+            
+            // Retry after delay
+            await Future.delayed(const Duration(seconds: 2));
+            if (mounted && _elementRotations.containsKey(elementId)) {
+              // Double-check user isn't interacting now
+              if (_currentlyDraggingId != elementId && 
+                  _currentlyResizingId != elementId && 
+                  _currentlyRotatingId != elementId) {
                 setState(() {
                   _elementRotations.remove(elementId);
                 });
                 debugPrint('🧹 Rotation cache cleared after retry delay');
               }
             }
-          } else {
-            debugPrint('❌ Background rotation write failed');
-            _elementRotations.remove(elementId);
           }
-        },
-        loading: () {
-          debugPrint('⏳ Pages loading during rotation save');
+        } else {
+          debugPrint('❌ Background rotation write failed');
           _elementRotations.remove(elementId);
-        },
-        error: (error, stack) {
-          debugPrint('❌ Error during rotation save: $error');
-          _elementRotations.remove(elementId);
-        },
-      );
-    } catch (e) {
-      debugPrint('❌ Exception in rotation save: $e');
-      if (mounted) {
-        setState(() {
-          _elementRotations.remove(elementId);
-        });
-      }
+        }
+      },
+      loading: () {
+        debugPrint('⏳ Pages loading during rotation save');
+        _elementRotations.remove(elementId);
+      },
+      error: (error, stack) {
+        debugPrint('❌ Error during rotation save: $error');
+        _elementRotations.remove(elementId);
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Exception in rotation save: $e');
+    if (mounted) {
+      setState(() {
+        _elementRotations.remove(elementId);
+      });
     }
   }
+}
 
   void _handleElementTap(String elementId) {
     debugPrint('🔵 ELEMENT TAPPED: $elementId');
@@ -2636,7 +2714,7 @@ Widget build(BuildContext context) {
   }
 
   final bookId = ref.watch(currentBookIdProvider);
-  final bookAsync = ref.watch(bookProvider(bookId ?? ''));
+  ref.watch(bookProvider(bookId ?? ''));
 
   if (bookId == null) {
     return Scaffold(
@@ -2760,11 +2838,7 @@ Widget build(BuildContext context) {
       
 if (_showPageContentWizard)
   PageContentWizard(
-    // ✅ NEW: Pass the book title here
-    initialBookTopic: bookAsync.maybeWhen(
-      data: (book) => book?.title ?? '',
-      orElse: () => '',
-    ),
+    bookId: bookId,
     onComplete: () async {
       final prefs = PreferencesService();
       await prefs.init();
@@ -2778,6 +2852,7 @@ if (_showPageContentWizard)
         _showPageContentWizard = false;
       });
     },
+    // ✅ ADD THESE MISSING REQUIRED CALLBACKS
     onAddText: () {
       setState(() {
         _showPageContentWizard = false;
@@ -2966,28 +3041,35 @@ Widget _buildEditorArea(String bookId) {
   final pagesAsync = ref.watch(bookPagesProvider(widget.bookId!));
   final pageIndex = ref.watch(currentPageIndexProvider);
 
-  // 🚀 NEW: Set up listener for canvas (same as pages panel)
-  ref.listen<AsyncValue<List<BookPage>>>(
-    bookPagesProvider(widget.bookId!),
-    (previous, next) {
-      next.whenData((newPages) {
-        if (!mounted) return;
-        
-        // Only update local state if not during user interaction
-        if (!isUserInteracting) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              setState(() {
-                _localCanvasPageOrder = List<BookPage>.from(newPages);
-              });
-            }
+List<BookPage>? _pendingProviderUpdate;
+
+ref.listen<AsyncValue<List<BookPage>>>(
+  bookPagesProvider(widget.bookId!),
+  (previous, next) {
+    next.whenData((newPages) {
+      if (!mounted) return;
+      
+      // ✅ CRITICAL FIX: Queue updates during interaction
+      if (isUserInteracting) {
+        debugPrint('⏸️ [Canvas] Queuing provider update for later');
+        _pendingProviderUpdate = newPages;
+        return;
+      }
+      
+      // Apply immediately if not interacting
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !isUserInteracting) {
+          setState(() {
+            _localCanvasPageOrder = List<BookPage>.from(newPages);
           });
         }
       });
-    },
-  );
+    });
+  },
+);
 
-  // 🚀 NEW: Initialize local state from provider (first load only)
+
+  // 🚀 Initialize local state from provider (first load only)
   pagesAsync.whenData((providerPages) {
     if (_localCanvasPageOrder == null && providerPages.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3006,143 +3088,144 @@ Widget _buildEditorArea(String bookId) {
       final displayPages = _localCanvasPageOrder ?? pages;
       
       debugPrint('🔄 _buildEditorArea REBUILT with ${displayPages.length} pages');
+      
       if (displayPages.isEmpty || pageIndex >= displayPages.length) {
         return const Center(child: Text('No page available'));
       }
 
-      final currentPage = displayPages[pageIndex]; 
-        if (pages.isEmpty || pageIndex >= pages.length) {
-          return const Center(child: Text('No page available'));
-        }
-        
-        // ✅ Get actual canvas dimensions
-        final canvasWidth = currentPage.pageSize?.width ?? 800;
-        final canvasHeight = currentPage.pageSize?.height ?? 600;
-
-        // ✅ CENTER CANVAS ON BUILD
-        _centerCanvas(canvasWidth, canvasHeight);
-
-        return Stack(
-          children: [
-            // ✅ MAIN SCROLLABLE CANVAS AREA - WITH CONTROLLERS
-            Container(
-              color: _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite,
-              child: SingleChildScrollView(
-                controller: _verticalScrollController,
-                scrollDirection: Axis.vertical,
-                child: Center(  // ✅ ADDED CENTER FOR VERTICAL
-                  child: SingleChildScrollView(
-                    controller: _horizontalScrollController,
-                    scrollDirection: Axis.horizontal,
-                    child: Center(  // ✅ ADDED CENTER FOR HORIZONTAL
-                      child: Padding(
-                        padding: const EdgeInsets.all(40),
-                        child: Transform.scale(
-                          scale: _zoomLevel,
-                          alignment: Alignment.center,  // ✅ CHANGED FROM topLeft TO center
-                          child: Listener(
-    behavior: HitTestBehavior.translucent,
-    onPointerDown: (event) {
-      debugPrint('🎯 Canvas Listener - onPointerDown');
-      debugPrint('   Local Position: ${event.localPosition}');
-      debugPrint('   Selected element: $_selectedElementId');
+      final currentPage = displayPages[pageIndex];
       
-      if (event.buttons == kSecondaryButton) {
-        return;
-      }
-      
-      if (event.buttons == kPrimaryButton) {
-        // ✅ CRITICAL FIX: Account for zoom level when calculating positions
-        // The event.localPosition is in the scaled (zoomed) coordinate space
-        // We need to convert it to canvas coordinate space
-        final scaledClickX = event.localPosition.dx;
-        final scaledClickY = event.localPosition.dy;
-        
-        // Convert to canvas coordinates (divide by zoom)
-        final canvasClickX = scaledClickX / _zoomLevel;
-        final canvasClickY = scaledClickY / _zoomLevel;
-        
-        debugPrint('   Canvas Position (zoom-adjusted): ($canvasClickX, $canvasClickY)');
-        
-        if (_selectedElementId != null) {
-          final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
-          final pageIndex = ref.read(currentPageIndexProvider);
-          
-          pagesAsync.whenData((pages) {
-            if (pages.isEmpty || pageIndex >= pages.length) return;
-            
-            final currentPage = pages[pageIndex];
-            final selectedElement = currentPage.elements.firstWhere(
-              (e) => e.id == _selectedElementId,
-              orElse: () => currentPage.elements.first,
-            );
-            
-            // Calculate rotation handle position in canvas coordinates
-            final elementPos = _elementOffsets[selectedElement.id] ?? selectedElement.position;
-            final elementSize = _elementSizes[selectedElement.id] ?? selectedElement.size;
-            
-            final handleCenterX = elementPos.dx + elementSize.width / 2;
-            final handleCenterY = elementPos.dy - 50;
-            
-            debugPrint('   Handle position: ($handleCenterX, $handleCenterY)');
-            
-            final distanceToHandle = math.sqrt(
-              math.pow(canvasClickX - handleCenterX, 2) + 
-              math.pow(canvasClickY - handleCenterY, 2)
-            );
-            
-            debugPrint('   Distance to rotation handle: ${distanceToHandle.toStringAsFixed(1)}px');
-            
-            // If click is within 40px of rotation handle, don't deselect
-            if (distanceToHandle < 40) {
-              debugPrint('   🚫 Click is near rotation handle - NOT deselecting');
-              return;
-            }
-            
-            debugPrint('   ✅ Click is on canvas - deselecting element');
-            setState(() => _selectedElementId = null);
-          });
-        } else {
-          setState(() => _selectedElementId = null);
-        }
-      }
-    },
-                            child: Container(
-                              width: canvasWidth,
-                              height: canvasHeight,
-                              decoration: BoxDecoration(
-                                color: currentPage.background.color,
-                                borderRadius: BorderRadius.circular(8),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha:0.2),
-                                    blurRadius: 20,
-                                    offset: const Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Stack(
-                                  children: [
-                                    if (currentPage.background.imageUrl != null)
-                                      Positioned.fill(
-                                        child: Image.network(
-                                          currentPage.background.imageUrl!,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (context, error, stackTrace) => const SizedBox(),
-                                        ),
-                                      ),
-                                    
-                                    if (_gridEnabled) _buildGridOverlay(),
-                                    
-                                    ...currentPage.elements.map((element) {
-                                      return _buildDraggableElement(element, currentPage.id);
-                                    }),
-                                    
-                                    if (currentPage.elements.isEmpty) _buildEmptyState(),
-                                  ],
+      // ✅ Get actual canvas dimensions
+      final canvasWidth = currentPage.pageSize?.width ?? 800;
+      final canvasHeight = currentPage.pageSize?.height ?? 600;
+
+      // ✅ CENTER CANVAS ON BUILD
+      _centerCanvas(canvasWidth, canvasHeight);
+
+      return Stack(
+        children: [
+          // ✅ MAIN SCROLLABLE CANVAS AREA - WITH CONTROLLERS
+          Container(
+            color: _isDarkMode ? AppTheme.nearlyBlack : AppTheme.nearlyWhite,
+            child: SingleChildScrollView(
+              controller: _verticalScrollController,
+              scrollDirection: Axis.vertical,
+              child: Center(
+                child: SingleChildScrollView(
+                  controller: _horizontalScrollController,
+                  scrollDirection: Axis.horizontal,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(40),
+                      child: Transform.scale(
+                        scale: _zoomLevel,
+                        alignment: Alignment.center,
+                        child: Listener(
+                          behavior: HitTestBehavior.translucent,
+                          onPointerDown: (event) {
+                            debugPrint('🎯 Canvas Listener - onPointerDown');
+                            debugPrint('   Local Position: ${event.localPosition}');
+                            debugPrint('   Selected element: $_selectedElementId');
+                            
+                              if (event.buttons == kSecondaryButton) {
+                                return;
+                              }
+                              
+                              // 🚀 CRITICAL FIX: Don't deselect if user is dragging or interacting
+                              if (isUserInteracting) {
+                                debugPrint('   ⏸️ User is interacting - ignoring canvas click');
+                                return;
+                              }
+                            
+                            if (event.buttons == kPrimaryButton) {
+                              // ✅ CRITICAL FIX: Account for zoom level when calculating positions
+                              final scaledClickX = event.localPosition.dx;
+                              final scaledClickY = event.localPosition.dy;
+                              
+                              // Convert to canvas coordinates (divide by zoom)
+                              final canvasClickX = scaledClickX / _zoomLevel;
+                              final canvasClickY = scaledClickY / _zoomLevel;
+                              
+                              debugPrint('   Canvas Position (zoom-adjusted): ($canvasClickX, $canvasClickY)');
+                              
+                              if (_selectedElementId != null) {
+                                final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+                                final pageIndex = ref.read(currentPageIndexProvider);
+                                
+                                pagesAsync.whenData((pages) {
+                                  if (pages.isEmpty || pageIndex >= pages.length) return;
+                                  
+                                  final currentPage = pages[pageIndex];
+                                  final selectedElement = currentPage.elements.firstWhere(
+                                    (e) => e.id == _selectedElementId,
+                                    orElse: () => currentPage.elements.first,
+                                  );
+                                  
+                                  // Calculate rotation handle position in canvas coordinates
+                                  final elementPos = _elementOffsets[selectedElement.id] ?? selectedElement.position;
+                                  final elementSize = _elementSizes[selectedElement.id] ?? selectedElement.size;
+                                  
+                                  final handleCenterX = elementPos.dx + elementSize.width / 2;
+                                  final handleCenterY = elementPos.dy - 50;
+                                  
+                                  debugPrint('   Handle position: ($handleCenterX, $handleCenterY)');
+                                  
+                                  final distanceToHandle = math.sqrt(
+                                    math.pow(canvasClickX - handleCenterX, 2) + 
+                                    math.pow(canvasClickY - handleCenterY, 2)
+                                  );
+                                  
+                                  debugPrint('   Distance to rotation handle: ${distanceToHandle.toStringAsFixed(1)}px');
+                                  
+                                  // If click is within 40px of rotation handle, don't deselect
+                                  if (distanceToHandle < 40) {
+                                    debugPrint('   🚫 Click is near rotation handle - NOT deselecting');
+                                    return;
+                                  }
+                                  
+                                  debugPrint('   ✅ Click is on canvas - deselecting element');
+                                  setState(() => _selectedElementId = null);
+                                });
+                              } else {
+                                setState(() => _selectedElementId = null);
+                              }
+                            }
+                          },
+                          child: Container(
+                            width: canvasWidth,
+                            height: canvasHeight,
+                            decoration: BoxDecoration(
+                              color: currentPage.background.color,
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.2),
+                                  blurRadius: 20,
+                                  offset: const Offset(0, 4),
                                 ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Stack(
+                                children: [
+                                  if (currentPage.background.imageUrl != null)
+                                    Positioned.fill(
+                                      child: Image.network(
+                                        currentPage.background.imageUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error, stackTrace) => const SizedBox(),
+                                      ),
+                                    ),
+                                  
+                                  if (_gridEnabled) _buildGridOverlay(),
+                                  
+                                  ...currentPage.elements.map((element) {
+                                    return _buildDraggableElement(element, currentPage.id);
+                                  }),
+                                  
+                                  if (currentPage.elements.isEmpty) _buildEmptyState(),
+                                ],
                               ),
                             ),
                           ),
@@ -3153,20 +3236,22 @@ Widget _buildEditorArea(String bookId) {
                 ),
               ),
             ),
-            
-            // ✅ ZOOM CONTROLS OVERLAY (Bottom Right)
-            Positioned(
-              bottom: 20,
-              right: 20,
-              child: _buildZoomControls(),
-            ),
-          ],
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, _) => Center(child: Text('Error: $error')),
-    );
-  }
+          ),
+          
+          // ✅ ZOOM CONTROLS OVERLAY (Bottom Right)
+          Positioned(
+            bottom: 20,
+            right: 20,
+            child: _buildZoomControls(),
+          ),
+        ],
+      );
+    },
+    loading: () => const Center(child: CircularProgressIndicator()),
+    error: (error, _) => Center(child: Text('Error: $error')),
+  );
+}
+
 
   Widget _buildZoomControls() {
     return Container(
@@ -3346,6 +3431,12 @@ Widget _buildEditorArea(String bookId) {
     }
 
   Widget _buildDraggableElement(PageElement element, String pageId) {
+
+      if (!_dragPositionNotifiers.containsKey(element.id)) {
+    _dragPositionNotifiers[element.id] = ValueNotifier<Offset>(element.position);
+      }
+
+
     final isSelected = _selectedElementId == element.id;
     final isDragging = _currentlyDraggingId == element.id;
     final isResizing = _currentlyResizingId == element.id;
@@ -3423,122 +3514,127 @@ Widget _buildEditorArea(String bookId) {
                           }
                         },
                         
-                        onPanStart: isResizing || isRotating || element.locked ? null : (details) {
-                          // ✅ Block drag if rotation is active
-                          if (_currentlyRotatingId != null) {
-                            debugPrint('⏸️ Drag blocked - rotation in progress');
-                            return;
-                          }
-                          
-                          if (element.locked) {
-                            _showSnackBar('Element is locked. Unlock it to move.');
-                            return;
-                          }
+onPanStart: isResizing || isRotating || element.locked ? null : (details) {
+  // ✅ Block drag if rotation is active
+  if (_currentlyRotatingId != null) {
+    debugPrint('⏸️ Drag blocked - rotation in progress');
+    return;
+  }
+  
+  if (element.locked) {
+    _showSnackBar('Element is locked. Unlock it to move.');
+    return;
+  }
 
-                          // ✅ Check if click is in rotation handle area (top center, 50px above element)
-                          final currentSize = _elementSizes[element.id] ?? element.size;
-                          final handleCenterX = currentSize.width / 2;
-                          final handleCenterY = -50;
-                          final clickX = details.localPosition.dx;
-                          final clickY = details.localPosition.dy;
-                          
-                          // If click is within 30px of rotation handle center, ignore drag
-                          final distanceToHandle = math.sqrt(
-                            math.pow(clickX - handleCenterX, 2) + math.pow(clickY - handleCenterY, 2)
-                          );
-                          
-                          if (distanceToHandle < 30) {
-                            debugPrint('🚫 Ignoring drag - click is in rotation handle area');
-                            return;
-                          }
-                          
-                          // ✅ Initialize ValueNotifier if needed
-                          if (!_dragPositionNotifiers.containsKey(element.id)) {
-                            _dragPositionNotifiers[element.id] = ValueNotifier<Offset>(element.position);
-                          }
-                          
-                          // ✅ Calculate mouse offset from element's top-left corner
-                          final currentElementPos = _elementOffsets[element.id] ?? element.position;
-                          _dragMouseOffset = details.localPosition;
-                          
-                          // ✅ Store initial state
-                          _selectedElementId = element.id;
-                          _currentlyDraggingId = element.id;
-                          _dragStartGlobalMousePosition = details.globalPosition;
-                          _dragStartElementPosition = currentElementPos;
-                          _originalPositions[element.id] = element.position;
-                          
-                          // ✅ Initialize working state
-                          _elementOffsets[element.id] = currentElementPos;
-                          _dragPositionNotifiers[element.id]!.value = currentElementPos;
-                          
-                          debugPrint('🎯 DRAG START | Element: ${element.id.substring(0, 8)} | Offset from top-left: $_dragMouseOffset');
-                        },
+  // ✅ Check if click is in rotation handle area (top center, 50px above element)
+  final currentSize = _elementSizes[element.id] ?? element.size;
+  final handleCenterX = currentSize.width / 2;
+  final handleCenterY = -50;
+  final clickX = details.localPosition.dx;
+  final clickY = details.localPosition.dy;
+  
+  // If click is within 30px of rotation handle center, ignore drag
+  final distanceToHandle = math.sqrt(
+    math.pow(clickX - handleCenterX, 2) + math.pow(clickY - handleCenterY, 2)
+  );
+  
+  if (distanceToHandle < 30) {
+    debugPrint('🚫 Ignoring drag - click is in rotation handle area');
+    return;
+  }
+  
+  // 🚀 REMOVED: ValueNotifier initialization (now done in _buildDraggableElement)
+  // The ValueNotifier is pre-created during widget build, not here
+  
+  // ✅ Calculate mouse offset from element's top-left corner
+  final currentElementPos = _elementOffsets[element.id] ?? element.position;
+  _dragMouseOffset = details.localPosition;
+  
+  // ✅ Store initial state WITHOUT calling setState
+  _selectedElementId = element.id;
+  _currentlyDraggingId = element.id;
+  _dragStartGlobalMousePosition = details.globalPosition;
+  _dragStartElementPosition = currentElementPos;
+  _originalPositions[element.id] = element.position;
+  
+  // ✅ Initialize working state
+  _elementOffsets[element.id] = currentElementPos;
+  _dragPositionNotifiers[element.id]!.value = currentElementPos;
+  
+  debugPrint('🎯 DRAG START | Element: ${element.id.substring(0, 8)} | Offset from top-left: $_dragMouseOffset');
+  
+  // 🚀 CRITICAL FIX: NO setState() HERE - this was causing the first-drag lag!
+  // The selection state change and drag flag will be reflected on the next frame
+  // ValueListenableBuilder will handle position updates smoothly
+},
+  onPanUpdate: isResizing || isRotating || element.locked ? null : (details) {
+  if (_dragStartGlobalMousePosition == null || 
+      _dragStartElementPosition == null ||
+      _dragMouseOffset == null) {
+    return;
+  }
+  
+  // ✅ Calculate total movement in global space
+  final currentGlobalMouse = details.globalPosition;
+  final globalDelta = currentGlobalMouse - _dragStartGlobalMousePosition!;
+  
+  // ✅ Scale delta by zoom
+  final canvasDelta = Offset(
+    globalDelta.dx / _zoomLevel,
+    globalDelta.dy / _zoomLevel,
+  );
+  
+  // ✅ Calculate new position
+  final newPosition = _dragStartElementPosition! + canvasDelta;
+  
+  // ✅ ONLY update ValueNotifier (no setState, prevents flicker)
+  _dragPositionNotifiers[element.id]?.value = newPosition;
+  
+  // ✅ Store for onPanEnd (don't trigger rebuild)
+  _elementOffsets[element.id] = newPosition;
+},
 
-                        onPanUpdate: isResizing || isRotating || element.locked ? null : (details) {
-                          if (_dragStartGlobalMousePosition == null || 
-                              _dragStartElementPosition == null ||
-                              _dragMouseOffset == null) {
-                            return;
-                          }
-                          
-                          // ✅ Calculate total movement in global space
-                          final currentGlobalMouse = details.globalPosition;
-                          final globalDelta = currentGlobalMouse - _dragStartGlobalMousePosition!;
-                          
-                          // ✅ Scale delta by zoom
-                          final canvasDelta = Offset(
-                            globalDelta.dx / _zoomLevel,
-                            globalDelta.dy / _zoomLevel,
-                          );
-                          
-                          // ✅ Calculate new position
-                          final newPosition = _dragStartElementPosition! + canvasDelta;
-                          
-                          // ✅ UPDATE ONLY ValueNotifier
-                          _dragPositionNotifiers[element.id]?.value = newPosition;
-                          _elementOffsets[element.id] = newPosition;
-                        },
+onPanEnd: isResizing || isRotating || element.locked ? null : (details) {
+  final elementId = element.id;
+  final finalPosition = _elementOffsets[elementId] ?? element.position;
+  final originalPosition = _originalPositions[elementId] ?? element.position;
 
-                        onPanEnd: isResizing || isRotating || element.locked ? null : (details) {
-                          final elementId = element.id;
-                          final finalPosition = _elementOffsets[elementId] ?? element.position;
-                          final originalPosition = _originalPositions[elementId] ?? element.position;
+  // ✅ Clear input state immediately
+  _dragStartGlobalMousePosition = null;
+  _dragStartElementPosition = null;
+  _dragMouseOffset = null;
+  
+  // ✅ Check if position actually changed
+  final distanceMoved = (finalPosition - originalPosition).distance;
+  
+  if (distanceMoved < 1.0) {
+    _currentlyDraggingId = null;
+    _elementOffsets.remove(elementId);
+    _originalPositions.remove(elementId);
+    if (mounted) setState(() {});
+    debugPrint('⚡ Drag end - no movement');
+    return;
+  }
 
-                          // ✅ Clear input state immediately
-                          _dragStartGlobalMousePosition = null;
-                          _dragStartElementPosition = null;
-                          _dragMouseOffset = null;
-                          
-                          // ✅ Check if position actually changed
-                          final distanceMoved = (finalPosition - originalPosition).distance;
-                          
-                          if (distanceMoved < 1.0) {
-                            _currentlyDraggingId = null;
-                            _elementOffsets.remove(elementId);
-                            _originalPositions.remove(elementId);
-                            if (mounted) setState(() {});
-                            debugPrint('⚡ Drag end - no movement');
-                            return;
-                          }
+  debugPrint('💾 Drag end - saving ${distanceMoved.toStringAsFixed(1)}px movement');
 
-                          debugPrint('💾 Drag end - saving ${distanceMoved.toStringAsFixed(1)}px movement');
+  // ✅ Clear drag state IMMEDIATELY
+  _currentlyDraggingId = null;
+  _originalPositions.remove(elementId);
+  
+  if (mounted) setState(() {});
+  
+  debugPrint('✅ UI updated instantly - starting background save');
 
-                          // ✅ Clear drag state IMMEDIATELY
-                          _currentlyDraggingId = null;
-                          _originalPositions.remove(elementId);
-                          
-                          if (mounted) setState(() {});
-                          
-                          debugPrint('✅ UI updated instantly - starting background save');
+  // ✅ Write to database in background
+  _saveElementPositionToDatabase(
+    elementId: elementId,
+    element: element,
+    finalPosition: finalPosition,
+  );
 
-                          // ✅ Write to database in background
-                          _saveElementPositionToDatabase(
-                            elementId: elementId,
-                            element: element,
-                            finalPosition: finalPosition,
-                          );
-                        },
+  _applyPendingProviderUpdates();
+},
 
                         onPanCancel: isResizing || isRotating || element.locked ? null : () {
                           debugPrint('❌ Drag cancelled');
@@ -3607,64 +3703,76 @@ Widget _buildEditorArea(String bookId) {
   );
     }
 
-  /// Save element position to database in background
-  void _saveElementPositionToDatabase({
-    required String elementId,
-    required PageElement element,
-    required Offset finalPosition,
-  }) async {
-    try {
-      final bookId = ref.read(currentBookIdProvider);
-      if (bookId == null) {
-        debugPrint('❌ No bookId for background save');
-        _elementOffsets.remove(elementId);
-        return;
-      }
+void _saveElementPositionToDatabase({
+  required String elementId,
+  required PageElement element,
+  required Offset finalPosition,
+}) async {
+  try {
+    final bookId = ref.read(currentBookIdProvider);
+    if (bookId == null) {
+      debugPrint('❌ No bookId for background save');
+      _elementOffsets.remove(elementId);
+      return;
+    }
 
-      final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
-      await pagesAsync.when(
-        data: (pages) async {
-          final pageIndex = ref.read(currentPageIndexProvider);
-          if (pages.isEmpty || pageIndex >= pages.length) {
-            debugPrint('❌ Invalid page for background save');
-            _elementOffsets.remove(elementId);
-            return;
-          }
+    final pagesAsync = ref.read(bookPagesProvider(widget.bookId!));
+    await pagesAsync.when(
+      data: (pages) async {
+        final pageIndex = ref.read(currentPageIndexProvider);
+        if (pages.isEmpty || pageIndex >= pages.length) {
+          debugPrint('❌ Invalid page for background save');
+          _elementOffsets.remove(elementId);
+          return;
+        }
 
-          final currentPage = pages[pageIndex];
+        final currentPage = pages[pageIndex];
+        
+        // Save to undo manager
+        _undoRedoManager.saveState(currentPage.elements, currentPage.background);
+
+        // Create updated element
+        final updatedElement = PageElement(
+          id: element.id,
+          type: element.type,
+          position: finalPosition,
+          size: element.size,
+          rotation: element.rotation,
+          properties: element.properties,
+          textStyle: element.textStyle,
+          textAlign: element.textAlign,
+          lineHeight: element.lineHeight,
+          shadows: element.shadows,
+          locked: element.locked,
+        );
+
+        // Write to database with skipInvalidation flag
+        final pageActions = ref.read(pageActionsProvider);
+        final success = await pageActions.updateElement(
+          currentPage.id, 
+          updatedElement,
+          skipInvalidation: true, // 🚀 Don't refresh provider during drag
+        );
+
+        if (success) {
+          debugPrint('✅ Background database write successful');
           
-          // Save to undo manager
-          _undoRedoManager.saveState(currentPage.elements, currentPage.background);
-
-          // Create updated element
-          final updatedElement = PageElement(
-            id: element.id,
-            type: element.type,
-            position: finalPosition,
-            size: element.size,
-            rotation: element.rotation,
-            properties: element.properties,
-            textStyle: element.textStyle,
-            textAlign: element.textAlign,
-            lineHeight: element.lineHeight,
-            shadows: element.shadows,
-            locked: element.locked,
-          );
-
-          // Write to database
-          final pageActions = ref.read(pageActionsProvider);
-          final success = await pageActions.updateElement(currentPage.id, updatedElement);
-
-          if (success) {
-            debugPrint('✅ Background database write successful');
+          // ✅ CRITICAL FIX: Don't invalidate if user is STILL interacting
+          if (_currentlyDraggingId == null && 
+              _currentlyResizingId == null && 
+              _currentlyRotatingId == null) {
             
-            // Invalidate provider to fetch fresh data
+            // Small delay to ensure database replication
+            await Future.delayed(const Duration(milliseconds: 100));
+            
+            // Now invalidate to fetch fresh data
+            debugPrint('🔄 Invalidating provider to fetch new position');
             ref.invalidate(bookPagesProvider(bookId));
             
-            // Wait for provider to refresh
-            await Future.delayed(const Duration(milliseconds: 300));
+            // Wait for provider to refresh with new data
+            await Future.delayed(const Duration(milliseconds: 400));
             
-            // Verify provider has new data before clearing cache
+            // Verify the provider has the CORRECT new position before clearing cache
             final freshPages = await ref.read(bookPagesProvider(bookId).future);
             if (freshPages.isEmpty || pageIndex >= freshPages.length) {
               debugPrint('⚠️ Fresh pages invalid - keeping cache');
@@ -3676,9 +3784,9 @@ Widget _buildEditorArea(String bookId) {
               orElse: () => element,
             );
             
-            final providerHasNewPosition = (freshElement.position - finalPosition).distance < 2.0;
+            final positionMatches = (freshElement.position - finalPosition).distance < 2.0;
             
-            if (providerHasNewPosition) {
+            if (positionMatches) {
               debugPrint('✅ Provider confirmed new position - clearing cache');
               if (mounted) {
                 setState(() {
@@ -3686,41 +3794,48 @@ Widget _buildEditorArea(String bookId) {
                 });
               }
             } else {
-              debugPrint('⚠️ Provider still has old position: ${freshElement.position} vs $finalPosition');
+              debugPrint('⚠️ Position mismatch: DB=${freshElement.position}, Expected=$finalPosition');
               debugPrint('⚠️ Keeping cache for 2 more seconds');
               
               // Retry clearing cache after delay
               await Future.delayed(const Duration(seconds: 2));
               if (mounted && _elementOffsets.containsKey(elementId)) {
-                setState(() {
-                  _elementOffsets.remove(elementId);
-                });
-                debugPrint('🧹 Cache cleared after retry delay');
+                if (_currentlyDraggingId != elementId && 
+                    _currentlyResizingId != elementId && 
+                    _currentlyRotatingId != elementId) {
+                  setState(() {
+                    _elementOffsets.remove(elementId);
+                  });
+                  debugPrint('🧹 Cache cleared after retry delay');
+                }
               }
             }
           } else {
-            debugPrint('❌ Background database write failed');
-            _elementOffsets.remove(elementId);
+            debugPrint('⏸️ User still interacting - deferring provider refresh');
           }
-        },
-        loading: () {
-          debugPrint('⏳ Pages loading during background save');
+        } else {
+          debugPrint('❌ Background database write failed');
           _elementOffsets.remove(elementId);
-        },
-        error: (error, stack) {
-          debugPrint('❌ Error during background save: $error');
-          _elementOffsets.remove(elementId);
-        },
-      );
-    } catch (e) {
-      debugPrint('❌ Exception in background save: $e');
-      if (mounted) {
-        setState(() {
-          _elementOffsets.remove(elementId);
-        });
-      }
+        }
+      },
+      loading: () {
+        debugPrint('⏳ Pages loading during background save');
+        _elementOffsets.remove(elementId);
+      },
+      error: (error, stack) {
+        debugPrint('❌ Error during background save: $error');
+        _elementOffsets.remove(elementId);
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Exception in background save: $e');
+    if (mounted) {
+      setState(() {
+        _elementOffsets.remove(elementId);
+      });
     }
   }
+}
 
   SystemMouseCursor _getResizeCursor(Alignment alignment) {
     if (alignment == Alignment.topLeft || alignment == Alignment.bottomRight) {

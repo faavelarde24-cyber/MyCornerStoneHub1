@@ -208,7 +208,7 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
       debugPrint('🎯 Calculated Zoom: $calculatedZoom');
       
       // Default to 70% zoom, or calculated zoom if smaller
-      final initialZoom = calculatedZoom < 0.7 ? calculatedZoom : 0.7;
+      final initialZoom = calculatedZoom < 0.5 ? calculatedZoom : 0.5;
       
       setState(() {
         _zoomLevel = initialZoom;
@@ -225,7 +225,7 @@ class _BookViewPageState extends ConsumerState<BookViewPage>
         _horizontalController.jumpTo(maxHorizontal * 0.5);
         _verticalController.jumpTo(maxVertical * 0.4);
         
-        debugPrint('📍 Scroll position set - H: ${maxHorizontal / 8}, V: ${maxVertical / 8}');
+        debugPrint('📍 Scroll position set - H: ${maxHorizontal / 5}, V: ${maxVertical / 4}');
       }
     });
     

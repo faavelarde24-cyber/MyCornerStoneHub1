@@ -48,10 +48,12 @@ lib/
 │   │       ├── image_search_dialog.dart   # Image search dialog
 │   │       ├── layer_management_panel.dart # Layer management
 │   │       ├── onboarding_guide.dart      # Onboarding guide
+│   │       ├── page_content_wizard.dart   # Page content wizard
 │   │       ├── pages_panel.dart           # Pages panel
 │   │       ├── properties_panel.dart      # Properties panel
 │   │       ├── shape_picker_dialog.dart   # Shape picker
-│   │       └── video_player_widget.dart   # Video player
+│   │       ├── video_player_widget.dart   # Video player
+│   │       └── wizard_exit_dialog.dart    # Wizard exit dialog
 │   │
 │   ├── book_view/                         # Book viewing module
 │   │   ├── book_view_page.dart            # Main view page
@@ -72,7 +74,8 @@ lib/
 │   │       ├── combine_books_page.dart    # Combine books feature
 │   │       ├── dashboard_app_bar.dart     # Dashboard app bar
 │   │       ├── dashboard_drawer.dart      # Dashboard drawer
-│   │       └── share_options_dialog.dart  # Share options dialog
+│   │       ├── share_options_dialog.dart  # Share options dialog
+│   │       └── ...                        # Additional dashboard widgets
 │   │
 │   └── library/                           # Library module
 │       └── widgets/
@@ -100,6 +103,7 @@ lib/
 │   ├── platform_file_saver_io.dart        # IO implementation
 │   ├── platform_file_saver_stub.dart      # Stub implementation
 │   ├── platform_file_saver_web.dart       # Web implementation
+│   ├── preference_service.dart            # User preferences service
 │   ├── storage_service.dart               # Storage management
 │   ├── supabase_service.dart              # Supabase backend integration
 │   └── undo_redo_manager.dart             # Undo/redo functionality
@@ -155,10 +159,10 @@ Shared UI components used across multiple pages.
 
 ## File Count Summary
 
-- **Total Dart Files**: 80+
+- **Total Dart Files**: 85+
 - **Models**: 11
-- **Pages**: 25+ (including subpages)
-- **Services**: 15
+- **Pages**: 28+ (including subpages)
+- **Services**: 16
 - **Providers**: 4
 - **Widgets**: 4
 - **Utils**: 3

@@ -5,12 +5,7 @@ import 'signup_page.dart';
 import '../../providers/auth_providers.dart';
 import '../../utils/role_redirect.dart';
 
-// ===== START DASHBOARD QUICK ACCESS =====
-// Import your dashboards here
-import '../dashboard/principal_dashboard.dart';
-import '../dashboard/teacher_dashboard.dart';
-import '../dashboard/student_dashboard.dart';
-// ===== END DASHBOARD QUICK ACCESS =====
+
 
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
@@ -28,28 +23,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   bool _isHoveringPassword = false;
   bool _isLoading = false;
 
-  // ===== START DASHBOARD QUICK ACCESS =====
-  bool _showDashboardMenu = false;
-  
-  void _navigateToDashboard(String dashboardType) {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (context) {
-          switch (dashboardType) {
-            case 'principal':
-              return const PrincipalDashboard();
-            case 'teacher':
-              return const ModernTeacherDashboard();
-            case 'student':
-              return const StudentDashboard();
-            default:
-              return const LoginPage();
-          }
-        },
-      ),
-    );
-  }
-  // ===== END DASHBOARD QUICK ACCESS =====
+
 
   Future<void> _handleLogin() async {
     if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
@@ -195,109 +169,36 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                       children: [
                         // ===== START DASHBOARD QUICK ACCESS =====
                         // Clickable Logo with dropdown indicator
-                        GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _showDashboardMenu = !_showDashboardMenu;
-                            });
-                          },
-                          child: Stack(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white.withValues(alpha:0.0),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha:0.0),
-                                    width: 2,
-                                  ),
-                                ),
-                                child: ClipOval(
-                                  child: Image.asset(
-                                    'assets/images/cornerstone_logo.jpeg',
-                                    width: 210,
-                                    height: 210,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (context, error, stackTrace) {
-                                      return const Icon(
-                                        Icons.business_center,
-                                        size: 48,
-                                        color: Colors.white,
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ),
-                              // Dropdown indicator badge
-                              Positioned(
-                                bottom: 10,
-                                right: 10,
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: Colors.orange,
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withValues(alpha: 0.3),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Icon(
-                                    _showDashboardMenu ? Icons.close : Icons.apps,
-                                    color: Colors.white,
-                                    size: 20,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                        // ===== START DASHBOARD QUICK ACCESS =====
+// Logo without quick access (students shouldn't bypass login)
+Container(
+  padding: const EdgeInsets.all(16),
+  decoration: BoxDecoration(
+    shape: BoxShape.circle,
+    color: Colors.white.withValues(alpha: 0.0),
+    border: Border.all(
+      color: Colors.white.withValues(alpha: 0.0),
+      width: 2,
+    ),
+  ),
+  child: ClipOval(
+    child: Image.asset(
+      'assets/images/cornerstone_logo.jpeg',
+      width: 210,
+      height: 210,
+      fit: BoxFit.cover,
+      errorBuilder: (context, error, stackTrace) {
+        return const Icon(
+          Icons.business_center,
+          size: 48,
+          color: Colors.white,
+        );
+      },
+    ),
+  ),
+),
                         
-                        // Dropdown menu
-                        if (_showDashboardMenu)
-                          Container(
-                            margin: const EdgeInsets.only(top: 16),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.95),
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.3),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ],
-                            ),
-                            child: Column(
-                              children: [
-                                _buildDashboardMenuItem(
-                                  icon: Icons.school,
-                                  title: 'Principal Dashboard',
-                                  color: Colors.blueAccent,
-                                  onTap: () => _navigateToDashboard('principal'),
-                                ),
-                                Divider(height: 1, color: Colors.grey.shade300),
-                                _buildDashboardMenuItem(
-                                  icon: Icons.menu_book,
-                                  title: 'Teacher Dashboard',
-                                  color: Colors.orangeAccent,
-                                  onTap: () => _navigateToDashboard('teacher'),
-                                ),
-                                Divider(height: 1, color: Colors.grey.shade300),
-                                _buildDashboardMenuItem(
-                                  icon: Icons.people,
-                                  title: 'Student Dashboard',
-                                  color: Colors.green,
-                                  onTap: () => _navigateToDashboard('student'),
-                                ),
-                              ],
-                            ),
-                          ),
-                        // ===== END DASHBOARD QUICK ACCESS =====
+          
                         
                         const SizedBox(height: 24),
                         RichText(
@@ -580,46 +481,4 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       ),
     );
   }
-
-  // ===== START DASHBOARD QUICK ACCESS =====
-  Widget _buildDashboardMenuItem({
-    required IconData icon,
-    required String title,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
-                ),
-              ),
-              const Spacer(),
-              Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey.shade400),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-  // ===== END DASHBOARD QUICK ACCESS =====
 }

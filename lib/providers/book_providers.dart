@@ -598,7 +598,7 @@ class PageActions {
     }
   }
 
-Future<bool> updateElement(String pageId, PageElement element) async {
+Future<bool> updateElement(String pageId, PageElement element, {bool skipInvalidation = false}) async {
   try {
     debugPrint('🔵 === PageActions.updateElement CALLED ===');
     debugPrint('Page ID: $pageId');
@@ -624,15 +624,20 @@ Future<bool> updateElement(String pageId, PageElement element) async {
     
     final result = await pageService.updateElement(pageId, element);
     
-    if (result != null) {
+if (result != null) {
       debugPrint('✅ Database update successful');
       
-      // 🚀 OPTIMIZATION: Don't invalidate immediately
-      // Let the calling code handle invalidation timing
+      // 🚀 CRITICAL: Only invalidate if NOT during active interaction
+      if (!skipInvalidation) {
+        debugPrint('🔄 Invalidating provider (interaction complete)');
+        ref.invalidate(bookPagesProvider(bookId));
+      } else {
+        debugPrint('⏸️ Skipping provider invalidation (active interaction)');
+      }
       
       _logger.i('PageActions: Element updated successfully');
       debugPrint('🔵 === PageActions.updateElement END (SUCCESS) ===');
-      return true;
+      return true;  
     }
     
     debugPrint('❌ pageService.updateElement returned null');

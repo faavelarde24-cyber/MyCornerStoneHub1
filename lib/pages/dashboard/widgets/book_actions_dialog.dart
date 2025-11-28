@@ -447,7 +447,6 @@ void _showDeleteConfirmation(BuildContext context, WidgetRef ref) {
   debugPrint('Book Title: ${book.title}');
   
   // ✅ Create a completer to control SnackBar dismissal
-  final loadingCompleter = Completer<void>();
   
   // Show loading SnackBar
   ScaffoldMessenger.of(context).showSnackBar(

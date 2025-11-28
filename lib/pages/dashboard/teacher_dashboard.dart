@@ -683,40 +683,52 @@ Future<void> _handleExportEPUB(Book book) async {
   bool get _isDarkMode => _themeMode == AppThemeMode.dark || _themeMode == AppThemeMode.gradient;
   
 
-  BoxDecoration _getCardDecoration() {
-    if (_themeMode == AppThemeMode.gradient) {
-      return BoxDecoration(
-        color: Colors.white.withValues(alpha:0.25),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.white.withValues(alpha:0.3),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha:0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      );
-    }
-    
+BoxDecoration _getCardDecoration() {
+  if (_themeMode == AppThemeMode.gradient) {
     return BoxDecoration(
-      color: _getCardColor(),
-      borderRadius: BorderRadius.circular(12),
+      gradient: LinearGradient(
+        colors: [
+          Colors.white.withValues(alpha: 0.2),
+          Colors.white.withValues(alpha: 0.1),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(
+        color: Colors.white.withValues(alpha: 0.3),
+        width: 1.5,
+      ),
       boxShadow: [
         BoxShadow(
-          color: _isDarkMode
-              ? Colors.black.withValues(alpha:.3)
-              : Colors.grey.withValues(alpha:0.15),
-          blurRadius: 8,
-          offset: const Offset(0, 2),
+          color: Color(0xFF24346D).withValues(alpha: 0.2),
+          blurRadius: 16,
+          offset: const Offset(0, 8),
         ),
       ],
     );
   }
-
+  
+  return BoxDecoration(
+    color: _getCardColor(),
+    borderRadius: BorderRadius.circular(16),
+    border: Border.all(
+      color: _isDarkMode 
+          ? Colors.grey.withValues(alpha: 0.2)
+          : Color(0xFFA6A6A6).withValues(alpha: 0.1),
+      width: 1,
+    ),
+    boxShadow: [
+      BoxShadow(
+        color: _isDarkMode
+            ? Colors.black.withValues(alpha: 0.3)
+            : Color(0xFF24346D).withValues(alpha: 0.08),
+        blurRadius: 12,
+        offset: const Offset(0, 4),
+      ),
+    ],
+  );
+}
 @override
 Widget build(BuildContext context) {
   final languageService = ref.watch(languageServiceProvider);
@@ -733,9 +745,9 @@ Widget build(BuildContext context) {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Color(0xFFE84C3D), // Red
-                Color(0xFFE67E22), // Orange
-                Color(0xFFF39C12), // Yellow-Orange
+                Color(0xFF24346D), // Passionate blu
+                Color(0xFF4A5A9D), // Mid tone blue
+                Color(0xFFFF914D), // Rust Orange
               ],
             ),
           )
@@ -883,100 +895,227 @@ Widget build(BuildContext context) {
     );
   }
 
-  Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageService languageService) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          languageService.translate('welcome'),
-          style: AppTheme.display1.copyWith(
-            fontSize: 28,
-            color: textColor,
+Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageService languageService) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Color(0xFFFFDE59).withValues(alpha: 0.3),
+                  Color(0xFFFF914D).withValues(alpha: 0.3),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.4),
+                width: 2,
+              ),
+            ),
+            child: Icon(
+              Icons.school,
+              color: textColor,
+              size: 28,
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          languageService.translate('create_books'),
-          style: AppTheme.body1.copyWith(
-            color: subtitleColor,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildGetStartedSection(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
-    final examples = [
-      {'icon': '📖', 'title': 'digital_portfolios', 'color': Colors.blue},
-      {'icon': '🎨', 'title': 'interactive_lessons', 'color': Colors.orange},
-      {'icon': '📚', 'title': 'storybooks', 'color': Colors.teal},
-      {'icon': '🎤', 'title': 'audio_narrations', 'color': Colors.purple},
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          languageService.translate('what_you_can_create'),
-          style: AppTheme.headline.copyWith(
-            color: textColor,
-            fontSize: 18,
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 100,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: examples.length,
-            itemBuilder: (context, index) {
-              final example = examples[index];
-              return FadeTransition(
-                opacity: Tween<double>(begin: 0, end: 1).animate(
-                  CurvedAnimation(
-                    parent: _animationController,
-                    curve: Interval(index * 0.1, 1.0, curve: Curves.easeOut),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Welcome Back, Educator',
+                  style: AppTheme.display1.copyWith(
+                    fontSize: 26,
+                    color: textColor,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
                   ),
                 ),
-                child: Container(
-                  width: 140,
-                  margin: EdgeInsets.only(
-                    right: 12,
-                    left: index == 0 ? 0 : 0,
+                Text(
+                  'Plan. Teach. Share.',
+                  style: AppTheme.body1.copyWith(
+                    color: subtitleColor,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 15,
                   ),
-                  decoration: _getCardDecoration(),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white.withValues(alpha: 0.15),
+              Colors.white.withValues(alpha: 0.08),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.25),
+            width: 1.5,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.lightbulb_outline,
+                  color: Color(0xFFFFDE59),
+                  size: 22,
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  'For educators who think ahead.',
+                  style: AppTheme.body1.copyWith(
+                    color: textColor,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 16,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildQuickStat('📚', 'Create', textColor),
+                const SizedBox(width: 16),
+                _buildQuickStat('🎯', 'Organize', textColor),
+                const SizedBox(width: 16),
+                _buildQuickStat('🚀', 'Scale', textColor),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _buildQuickStat(String emoji, String label, Color textColor) {
+  return Row(
+    children: [
+      Text(emoji, style: TextStyle(fontSize: 16)),
+      const SizedBox(width: 6),
+      Text(
+        label,
+        style: AppTheme.caption.copyWith(
+          color: textColor.withValues(alpha: 0.9),
+          fontWeight: FontWeight.w500,
+          fontSize: 13,
+        ),
+      ),
+    ],
+  );
+}
+
+  Widget _buildGetStartedSection(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
+  final examples = [
+    {'icon': '📊', 'title': 'Lesson Plans', 'color': const Color(0xFF24346D)},      // Passionate Blue
+    {'icon': '🎓', 'title': 'Curriculum Design', 'color': const Color(0xFFFF914D)},  // Rust Orange
+    {'icon': '📝', 'title': 'Assessments', 'color': const Color(0xFFFFDE59)},        // Mustard
+    {'icon': '🔄', 'title': 'Collaborative Teaching', 'color': const Color(0xFFA6A6A6)}, // Quicksilver
+  ];
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Color(0xFF24346D).withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.explore,
+              color: textColor,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            'Structure meets flexibility.',
+            style: AppTheme.headline.copyWith(
+              color: textColor,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      SizedBox(
+        height: 120,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          itemCount: examples.length,
+          itemBuilder: (context, index) {
+            final example = examples[index];
+            return FadeTransition(
+              opacity: Tween<double>(begin: 0, end: 1).animate(
+                CurvedAnimation(
+                  parent: _animationController,
+                  curve: Interval(index * 0.1, 1.0, curve: Curves.easeOut),
+                ),
+              ),
+              child: Container(
+                width: 160,
+                margin: EdgeInsets.only(right: 12),
+                decoration: _getCardDecoration(),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: (example['color'] as Color).withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
                         example['icon'] as String,
                         style: const TextStyle(fontSize: 32),
                       ),
-                      const SizedBox(height: 6),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: Text(
-                          languageService.translate(example['title'] as String),
-                          style: AppTheme.caption.copyWith(
-                            color: _getCardTextColor(),
-                            fontWeight: FontWeight.w600,
-                            fontSize: 11,
-                          ),
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        languageService.translate(example['title'] as String),
+                        style: AppTheme.caption.copyWith(
+                          color: _getCardTextColor(),
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
                         ),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
-      ],
-    );
-  }
+      ),
+    ],
+  );
+}
 
   Widget _buildBooksSection(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
     final booksAsync = ref.watch(userBooksProvider);
@@ -987,37 +1126,74 @@ Widget build(BuildContext context) {
         Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
   children: [
-    Text(
-      languageService.translate('your_books'),
-      style: AppTheme.headline.copyWith(
-        color: textColor,
-        fontSize: 18,
-      ),
+    Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Color(0xFF24346D).withValues(alpha: 0.2),
+                Color(0xFFFF914D).withValues(alpha: 0.2),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.3),
+              width: 1.5,
+            ),
+          ),
+          child: Icon(
+            Icons.auto_stories_rounded,
+            color: textColor,
+            size: 22,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          'Your Books',
+          style: AppTheme.headline.copyWith(
+            color: textColor,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            letterSpacing: -0.3,
+          ),
+        ),
+      ],
     ),
     Row(
       children: [
         TextButton.icon(
           onPressed: _showBooksList,
-          icon: Icon(Icons.menu_book, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          icon: Icon(Icons.grid_view, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
           label: Text(
             'View All',
-            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+            style: TextStyle(
+              color: _themeMode == AppThemeMode.gradient ? Colors.white : null,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           style: TextButton.styleFrom(
-            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF24346D),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           ),
         ),
         const SizedBox(width: 8),
-        TextButton.icon(
+        ElevatedButton.icon(
           onPressed: _createNewBook,
-          icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          icon: const Icon(Icons.add_circle_outline, size: 18),
           label: Text(
             languageService.translate('create_new'),
-            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          style: TextButton.styleFrom(
-            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFFF914D),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            elevation: 4,
           ),
         ),
       ],
@@ -1091,56 +1267,72 @@ Widget _buildLibrariesSection(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            'My Libraries & Classes',
-            style: AppTheme.headline.copyWith(
-              color: textColor,
-              fontSize: 18,
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Color(0xFFFFDE59).withValues(alpha: 0.3),
+                Color(0xFFFF914D).withValues(alpha: 0.3),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.3),
+              width: 1.5,
             ),
           ),
-          Row(
-            children: [
-              TextButton.icon(
-                onPressed: _showLibrariesList,
-                icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                label: Text(
-                  'View All',
-                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-                ),
-              ),
-              const SizedBox(width: 8),
-              TextButton.icon(
-                onPressed: _showJoinLibraryDialog,
-                icon: Icon(Icons.login, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                label: Text(
-                  'Join Library',
-                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-                ),
-              ),
-              const SizedBox(width: 8),
-              TextButton.icon(
-                onPressed: _showCreateLibraryDialog,
-                icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                label: Text(
-                  'Create Library',
-                  style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-                ),
-              ),
-            ],
+          child: Icon(
+            Icons.library_books_rounded,
+            color: textColor,
+            size: 22,
           ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          'Libraries & Networks',
+          style: AppTheme.headline.copyWith(
+            color: textColor,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            letterSpacing: -0.3,
+          ),
+        ),
+      ],
+    ),
+    Row(
+      children: [
+        TextButton.icon(
+          onPressed: _showLibrariesList,
+          icon: Icon(Icons.library_books, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          label: Text(
+            'View All',
+            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          ),
+          style: TextButton.styleFrom(
+            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF24346D),
+          ),
+        ),
+        const SizedBox(width: 8),
+        TextButton.icon(
+          onPressed: _showCreateLibraryDialog,
+          icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          label: Text(
+            'Create Library',
+            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+          ),
+          style: TextButton.styleFrom(
+            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF24346D),
+          ),
+        ),
+      ],
+    ),
+  ],
+),
       const SizedBox(height: 12),
       
       createdLibrariesAsync.when(
@@ -1788,7 +1980,12 @@ Future<void> _showDeleteLibraryConfirmation(Library library) async {
   }
 
   Widget _buildBookCard(Book book, Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
-    final colors = [Colors.blue, Colors.orange, Colors.teal, Colors.purple, Colors.pink, Colors.green];
+    final colors = [
+  const Color(0xFF24346D),  // Passionate Blue
+  const Color(0xFFFF914D),  // Rust Orange
+  const Color(0xFFFFDE59),  // Mustard
+  const Color(0xFFA6A6A6),  // Quicksilver
+];
     final colorIndex = int.parse(book.id) % colors.length;
     final bookColor = colors[colorIndex];
 

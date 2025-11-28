@@ -46,20 +46,42 @@ class AuthService {
   }
 
   // Load user profile from database
-  Future<void> _loadUserProfile(String authId) async {
-    try {
-      final userProfile = await _supabase
-          .from('Users')
-          .select()
-          .eq('AuthId', authId)
-          .single();
+// Load user profile from database
+Future<void> _loadUserProfile(String authId) async {
+  try {
+    debugPrint('🔍 === LOADING USER PROFILE ===');
+    debugPrint('🔍 AuthId: $authId');
+    
+    final userProfile = await _supabase
+        .from('Users')
+        .select()
+        .eq('AuthId', authId)
+        .single();
 
-      _currentAppUser = AppUser.fromJson(userProfile);
-    } catch (e) {
-      debugPrint('⛔ Error loading user profile: $e');
-      _currentAppUser = null;
-    }
+    debugPrint('✅ Raw user profile data: $userProfile');
+    debugPrint('🔍 Keys in response: ${userProfile.keys.toList()}');
+    
+    // Check if UsersId exists (with different casing variations)
+    debugPrint('🔍 UsersId variations:');
+    debugPrint('   - usersid: ${userProfile['usersid']}');
+    debugPrint('   - UsersId: ${userProfile['UsersId']}');
+    debugPrint('   - UsersID: ${userProfile['UsersID']}');
+    debugPrint('   - USERSID: ${userProfile['USERSID']}');
+    
+    _currentAppUser = AppUser.fromJson(userProfile);
+    
+    debugPrint('✅ AppUser created successfully');
+    debugPrint('✅ AppUser.usersId: ${_currentAppUser?.usersId}');
+    debugPrint('✅ AppUser.email: ${_currentAppUser?.email}');
+    debugPrint('✅ AppUser.fullName: ${_currentAppUser?.fullName}');
+    debugPrint('🔍 === USER PROFILE LOADED ===');
+  } catch (e, stackTrace) {
+    debugPrint('⛔ === ERROR LOADING USER PROFILE ===');
+    debugPrint('⛔ Error: $e');
+    debugPrint('⛔ Stack trace: $stackTrace');
+    _currentAppUser = null;
   }
+}
 
   // Updated signUp method
   Future<AuthResult> signUp({
@@ -485,4 +507,10 @@ class AuthService {
       await _loadUserProfile(user.id);
     }
   }
+
+// Get current user's database ID
+int? getCurrentUserId() {
+  return _currentAppUser?.usersId;
+}
+
 }

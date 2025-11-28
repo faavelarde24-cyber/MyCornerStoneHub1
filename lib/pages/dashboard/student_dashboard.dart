@@ -16,11 +16,8 @@ import 'package:cornerstone_hub/providers/library_providers.dart';
 import 'package:cornerstone_hub/models/library_models.dart';
 import 'package:cornerstone_hub/models/app_theme_mode.dart';
 import 'package:cornerstone_hub/pages/book/widgets/books_list_dialog.dart';
-import 'package:cornerstone_hub/pages/dashboard/book_dashboard_page.dart';
 import '../../providers/auth_providers.dart';
 import '../../main.dart';
-import 'package:cornerstone_hub/pages/book_creator/choose_book_size_page.dart';
-import 'package:cornerstone_hub/models/book_size_type.dart';
 import 'dart:async'; 
 import 'package:flutter/foundation.dart' show kIsWeb; 
 import 'package:cornerstone_hub/services/book_export_service.dart'; 
@@ -126,14 +123,7 @@ void _showBooksList() {
   );
 }
 
-void _navigateToBookDashboard() {
-  Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (context) => const BookDashboardPage(),
-    ),
-  );
-}
+
 
   Future<void> _handleLogout() async {
   try {
@@ -162,156 +152,7 @@ void _navigateToBookDashboard() {
   }
 }
 
-void _createNewBook() async {
-  debugPrint('🟢 === _createNewBook START ===');
-  
-  // Step 1: Show title/description dialog
-  final bookDetails = await showDialog<Map<String, String?>>(
-    context: context,
-    builder: (dialogContext) => _CreateBookDialog(),
-  );
 
-  // User cancelled the dialog
-  if (bookDetails == null) {
-    debugPrint('❌ Book creation cancelled at title dialog');
-    return;
-  }
-
-  final title = bookDetails['title']!;
-  final description = bookDetails['description'];
-  
-  debugPrint('📝 Book title: $title');
-  debugPrint('📝 Description: ${description ?? "none"}');
-
-  // Step 2: Show size selection
-  debugPrint('📏 Opening size selection page...');
-  final selectedSize = await Navigator.push<BookSizeType>(
-    context,
-    MaterialPageRoute(
-      builder: (context) => ChooseBookSizePage(
-        title: title,
-        description: description,
-      ),
-    ),
-  );
-
-  debugPrint('🔙 Returned from ChooseBookSizePage');
-  debugPrint('Context mounted: $mounted');
-  debugPrint('Selected size: ${selectedSize?.label ?? "cancelled"}');
-
-  // User cancelled size selection
-  if (selectedSize == null) {
-    debugPrint('❌ Size selection cancelled');
-    return;
-  }
-
-  if (!mounted) return;
-
-  // Step 3: Create the book
-  debugPrint('⏳ Showing loading snackbar...');
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Row(
-        children: [
-          SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Colors.white,
-            ),
-          ),
-          SizedBox(width: 16),
-          Text('Creating book...'),
-        ],
-      ),
-      behavior: SnackBarBehavior.floating,
-      duration: Duration(seconds: 30),
-    ),
-  );
-
-  debugPrint('📚 Calling bookActions.createBook...');
-  final bookActions = ref.read(bookActionsProvider);
-  final book = await bookActions.createBook(
-    title: title,
-    description: description,
-    sizeType: selectedSize,
-  );
-
-  debugPrint('📚 Book creation result: ${book != null ? book.id : "null"}');
-
-  if (!mounted) {
-    debugPrint('⚠️ Widget unmounted after book creation');
-    return;
-  }
-
-  // Hide loading indicator
-  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-  if (book != null) {
-    debugPrint('✅ Book created successfully: ${book.id}');
-    debugPrint('📄 Book has ${book.pageCount} pages');
-    
-    // Wait for provider to sync
-    debugPrint('⏳ Waiting for provider sync...');
-    await Future.delayed(const Duration(milliseconds: 800));
-    
-    debugPrint('🔄 Setting current book ID...');
-    ref.read(currentBookIdProvider.notifier).setBookId(book.id);
-    
-    await Future.delayed(const Duration(milliseconds: 200));
-    
-    // Refresh book list
-    ref.invalidate(userBooksProvider);
-    
-    // Navigate to book creator
-    debugPrint('🚀 Navigating to BookCreatorPage...');
-    
-    try {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) {
-            debugPrint('🏗️ Building BookCreatorPage...');
-            return BookCreatorPage(bookId: book.id);
-          },
-        ),
-      );
-      debugPrint('✅ Returned from BookCreatorPage');
-    } catch (e, stack) {
-      debugPrint('❌ Navigation error: $e');
-      debugPrint('Stack: $stack');
-    }
-    
-    // Show success message
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Book "${book.title}" created successfully!'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
-    
-    debugPrint('🟢 === _createNewBook END (SUCCESS) ===');
-  } else {
-    debugPrint('❌ Book creation failed');
-    
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to create book. Please try again.'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 5),
-        ),
-      );
-    }
-    
-    debugPrint('🟢 === _createNewBook END (FAILED) ===');
-  }
-}
 
   void _editBook(Book book) {
     Navigator.push(
@@ -683,39 +524,46 @@ Future<void> _handleExportEPUB(Book book) async {
   bool get _isDarkMode => _themeMode == AppThemeMode.dark || _themeMode == AppThemeMode.gradient;
   
 
-  BoxDecoration _getCardDecoration() {
-    if (_themeMode == AppThemeMode.gradient) {
-      return BoxDecoration(
-        color: Colors.white.withValues(alpha:0.25),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.white.withValues(alpha:0.3),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha:0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      );
-    }
-    
+BoxDecoration _getCardDecoration() {
+  if (_themeMode == AppThemeMode.gradient) {
     return BoxDecoration(
-      color: _getCardColor(),
-      borderRadius: BorderRadius.circular(12),
+      gradient: LinearGradient(
+        colors: [
+          Colors.white.withValues(alpha: 0.3),
+          Colors.white.withValues(alpha: 0.2),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      ),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(
+        color: Colors.white.withValues(alpha: 0.4),
+        width: 2,
+      ),
       boxShadow: [
         BoxShadow(
-          color: _isDarkMode
-              ? Colors.black.withValues(alpha:.3)
-              : Colors.grey.withValues(alpha:0.15),
-          blurRadius: 8,
-          offset: const Offset(0, 2),
+          color: Colors.black.withValues(alpha: 0.15),
+          blurRadius: 12,
+          offset: const Offset(0, 6),
         ),
       ],
     );
   }
+  
+  return BoxDecoration(
+    color: _getCardColor(),
+    borderRadius: BorderRadius.circular(16),
+    boxShadow: [
+      BoxShadow(
+        color: _isDarkMode
+            ? Colors.black.withValues(alpha: 0.3)
+            : Colors.grey.withValues(alpha: 0.2),
+        blurRadius: 10,
+        offset: const Offset(0, 4),
+      ),
+    ],
+  );
+}
 
 @override
 Widget build(BuildContext context) {
@@ -733,10 +581,11 @@ Widget build(BuildContext context) {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Color(0xFFE84C3D), // Red
-                Color(0xFFE67E22), // Orange
-                Color(0xFFF39C12), // Yellow-Orange
+                Color(0xFFFF3131), // Red
+                Color(0xFFFF914D), // Orange
+                Color(0xFFFFDE59), // Yellow-Orange
               ],
+               stops: [0.0, 0.5, 1.0],
             ),
           )
         : BoxDecoration(color: backgroundColor),
@@ -758,8 +607,8 @@ Widget build(BuildContext context) {
         onShowLibraries: _showLibrariesList,
         onCreateLibrary: _showCreateLibraryDialog,
         onShowBooks: _showBooksList,
-        onCreateBook: _createNewBook, 
-        onBookDashboardTap: _navigateToBookDashboard,
+  
+        onBookDashboardTap: null, // Disabled for students
         isStudent: true,
       ),
       body: Column(
@@ -817,15 +666,6 @@ child: Row(
       onPressed: _toggleTheme,
       tooltip: 'Toggle Theme',
     ),
-    const SizedBox(width: 8),
-    // ✅ ADD THIS: Book Dashboard Icon
-    IconButton(
-      icon: const Icon(Icons.auto_stories),
-      color: textColor,
-      onPressed: _navigateToBookDashboard,
-      tooltip: 'Book Dashboard',
-    ),
-    const SizedBox(width: 8),
     InkWell(
       onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
       borderRadius: BorderRadius.circular(20),
@@ -879,42 +719,96 @@ Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageServic
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(
-        languageService.translate('welcome'),
-        style: AppTheme.display1.copyWith(
-          fontSize: 28,
-          color: textColor,
-        ),
+      Row(
+        children: [
+          Text(
+            '✨ ',
+            style: TextStyle(fontSize: 32),
+          ),
+          Expanded(
+            child: Text(
+              'Welcome Back, Creator!',
+              style: AppTheme.display1.copyWith(
+                fontSize: 26,
+                color: textColor,
+                fontWeight: FontWeight.bold,
+                letterSpacing: -0.5,
+              ),
+            ),
+          ),
+        ],
       ),
-      const SizedBox(height: 8),
-      Text(
-        'View your assignments and create personal projects',
-        style: AppTheme.body1.copyWith(
-          color: subtitleColor,
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.white.withValues(alpha: 0.25),
+              Colors.white.withValues(alpha: 0.15),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.3),
+            width: 1.5,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Your classroom. Your content. Your Cornerstone.',
+              style: AppTheme.body1.copyWith(
+                color: textColor,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '📚 View assignments  •  🎨 Create projects  •  🌟 Share your story',
+              style: AppTheme.caption.copyWith(
+                color: subtitleColor,
+                fontSize: 13,
+              ),
+            ),
+          ],
         ),
       ),
     ],
   );
 }
 
-  Widget _buildGetStartedSection(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
-    final examples = [
-      {'icon': '📖', 'title': 'digital_portfolios', 'color': Colors.blue},
-      {'icon': '🎨', 'title': 'interactive_lessons', 'color': Colors.orange},
-      {'icon': '📚', 'title': 'storybooks', 'color': Colors.teal},
-      {'icon': '🎤', 'title': 'audio_narrations', 'color': Colors.purple},
-    ];
+Widget _buildGetStartedSection(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
+  final examples = [
+    {'icon': '📖', 'title': 'digital_portfolios', 'color': const Color(0xFFFF3131)},  // Pelati
+    {'icon': '🎨', 'title': 'interactive_lessons', 'color': const Color(0xFFFF914D)}, // Bright Orange
+    {'icon': '📚', 'title': 'storybooks', 'color': const Color(0xFFFFDE59)},          // Mustard
+    {'icon': '🌟', 'title': 'Your Story', 'color': const Color(0xFFC4BBB4)},          // Linnet
+  ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          languageService.translate('what_you_can_create'),
-          style: AppTheme.headline.copyWith(
-            color: textColor,
-            fontSize: 18,
-          ),
-        ),
+Row(
+  children: [
+    Text(
+      '🚀 ',
+      style: TextStyle(fontSize: 20),
+    ),
+    Text(
+      'Create. Share. Inspire.',
+      style: AppTheme.headline.copyWith(
+        color: textColor,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+  ],
+),
         const SizedBox(height: 12),
         SizedBox(
           height: 100,
@@ -979,40 +873,47 @@ Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageServic
         Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
   children: [
-    Text(
-      languageService.translate('your_books'),
-      style: AppTheme.headline.copyWith(
+Row(
+  children: [
+    Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Color(0xFFFF3131).withValues(alpha: 0.2),
+            Color(0xFFFF914D).withValues(alpha: 0.2),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        Icons.auto_stories,
         color: textColor,
-        fontSize: 18,
+        size: 20,
       ),
     ),
-    Row(
-      children: [
-        TextButton.icon(
-          onPressed: _showBooksList,
-          icon: Icon(Icons.menu_book, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-          label: Text(
-            'View All',
-            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-          ),
-          style: TextButton.styleFrom(
-            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-          ),
-        ),
-        const SizedBox(width: 8),
-        TextButton.icon(
-          onPressed: _createNewBook,
-          icon: Icon(Icons.add_circle_outline, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-          label: Text(
-            languageService.translate('create_new'),
-            style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
-          ),
-          style: TextButton.styleFrom(
-            foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          ),
-        ),
-      ],
+    const SizedBox(width: 12),
+    Text(
+      'Your Books',
+      style: AppTheme.headline.copyWith(
+        color: textColor,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+  ],
+),
+    // Students can only view books, not create them
+    TextButton.icon(
+      onPressed: _showBooksList,
+      icon: Icon(Icons.menu_book, size: 18, color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+      label: Text(
+        'View All',
+        style: TextStyle(color: _themeMode == AppThemeMode.gradient ? Colors.white : null),
+      ),
+      style: TextButton.styleFrom(
+        foregroundColor: _themeMode == AppThemeMode.gradient ? Colors.white : const Color(0xFF6C5CE7),
+      ),
     ),
   ],
 ),
@@ -1023,26 +924,24 @@ Widget _buildWelcomeSection(Color textColor, Color subtitleColor, LanguageServic
               return _buildEmptyBooksState(cardColor, textColor, subtitleColor, languageService);
             }
             
-            return SizedBox(
-              height: 180,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: EdgeInsets.zero,
-                itemCount: books.length + 1,
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return _buildCreateNewCard(cardColor, textColor, languageService);
-                  }
-                  return _buildBookCard(
-                    books[index - 1],
-                    cardColor,
-                    textColor,
-                    subtitleColor,
-                    languageService,
-                  );
-                },
-              ),
-            );
+          return SizedBox(
+            height: 180,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.zero,
+              itemCount: books.length, // No +1 for create card
+              itemBuilder: (context, index) {
+                // Students see only their assigned books
+                return _buildBookCard(
+                  books[index],
+                  cardColor,
+                  textColor,
+                  subtitleColor,
+                  languageService,
+                );
+              },
+            ),
+          );
           },
           loading: () => Container(
             height: 180,
@@ -1085,12 +984,35 @@ Widget _buildLibrariesSection(
       Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            'My Libraries & Classes',
-            style: AppTheme.headline.copyWith(
-              color: textColor,
-              fontSize: 18,
-            ),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Color(0xFFFF914D).withValues(alpha: 0.2),
+                      Color(0xFFFFDE59).withValues(alpha: 0.2),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  Icons.library_books,
+                  color: textColor,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Libraries & Classes',
+                style: AppTheme.headline.copyWith(
+                  color: textColor,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
           ),
           Row(
             children: [
@@ -1319,118 +1241,59 @@ Widget _buildLibrariesSection(
     );
   }
 
-  Widget _buildEmptyBooksState(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
-    return Container(
-      height: 180,
-      decoration: _getCardDecoration(),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.auto_stories_outlined,
-              size: 64,
-              color: _getCardTextColor(),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No books yet',
-              style: AppTheme.subtitle.copyWith(
-                color: _getCardTextColor(),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Create your first book to get started',
-              style: AppTheme.caption.copyWith(color: _getCardTextColor().withValues(alpha:0.7)),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _createNewBook,
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('Create Book'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF6C5CE7),
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCreateNewCard(Color cardColor, Color textColor, LanguageService languageService) {
-    return Container(
-      width: 140,
-      margin: const EdgeInsets.only(right: 12, left: 0),
-      child: InkWell(
-        onTap: _createNewBook,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          decoration: _themeMode == AppThemeMode.gradient
-              ? BoxDecoration(
-                  color: Colors.white.withValues(alpha:0.25),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha:0.5),
-                    width: 2,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha:0.1),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                )
-              : BoxDecoration(
-                  color: cardColor,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: const Color(0xFF6C5CE7).withValues(alpha:0.4),
-                    width: 2,
-                  ),
-                ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: _themeMode == AppThemeMode.gradient
-                      ? Colors.white.withValues(alpha:0.3)
-                      : const Color(0xFF6C5CE7).withValues(alpha:0.15),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.add,
-                  size: 32,
-                  color: _themeMode == AppThemeMode.gradient
-                      ? Colors.white
-                      : const Color(0xFF6C5CE7),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '${languageService.translate('create_new')}\n${languageService.translate('books')}',
-                style: AppTheme.subtitle.copyWith(
-                  color: _getCardTextColor(),
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
+Widget _buildEmptyBooksState(Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
+  return Container(
+    height: 180,
+    decoration: _getCardDecoration(),
+    child: Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.auto_stories_outlined,
+            size: 64,
+            color: _getCardTextColor(),
           ),
-        ),
+          const SizedBox(height: 12),
+          Text(
+  '📚 No books yet',
+  style: AppTheme.subtitle.copyWith(
+    color: _getCardTextColor(),
+    fontWeight: FontWeight.bold,
+    fontSize: 18,
+  ),
+),
+const SizedBox(height: 8),
+Text(
+  'Every voice has value.',
+  style: AppTheme.body1.copyWith(
+    color: _getCardTextColor(),
+    fontWeight: FontWeight.w600,
+  ),
+  textAlign: TextAlign.center,
+),
+const SizedBox(height: 4),
+Text(
+  'Books shared by your teacher will appear here',
+  style: AppTheme.caption.copyWith(
+    color: _getCardTextColor().withValues(alpha: 0.7),
+  ),
+  textAlign: TextAlign.center,
+),
+        ],
       ),
-    );
-  }
+    ),
+  );
+}
+
 
   Widget _buildBookCard(Book book, Color cardColor, Color textColor, Color subtitleColor, LanguageService languageService) {
-    final colors = [Colors.blue, Colors.orange, Colors.teal, Colors.purple, Colors.pink, Colors.green];
+   final colors = [
+  const Color(0xFFFF3131),  // Pelati
+  const Color(0xFFFF914D),  // Bright Orange
+  const Color(0xFFFFDE59),  // Mustard
+  const Color(0xFFC4BBB4),  // Linnet
+];
     final colorIndex = int.parse(book.id) % colors.length;
     final bookColor = colors[colorIndex];
 
